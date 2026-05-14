@@ -1,0 +1,21 @@
+{
+  "name": "medical-triage-app",
+  "version": "1.0.0",
+  "description": "AI医疗导诊系统 - Android应用",
+  "main": "index.html",
+  "scripts": {
+    "build": "npm run copy && npm run sync",
+    "copy": "npx cap copy",
+    "sync": "npx cap sync",
+    "open:android": "npx cap open android",
+    "build:android": "npm run build && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/preferences": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}

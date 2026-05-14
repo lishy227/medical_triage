@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AI医疗导诊</string>
+    <string name="title_activity_main">AI医疗导诊</string>
+    <string name="package_name">com.example.medicaltriage</string>
+    <string name="custom_url_scheme">com.example.medicaltriage</string>
+</resources>

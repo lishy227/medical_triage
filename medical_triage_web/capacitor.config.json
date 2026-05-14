@@ -1,0 +1,12 @@
+{
+  "appId": "com.example.medicaltriage",
+  "appName": "AI医疗导诊",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

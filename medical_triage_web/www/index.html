@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI医疗导诊系统</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">🏥</div>
+                <h1>AI导诊助手</h1>
+            </div>
+            <div class="sidebar-info">
+                <div class="info-card">
+                    <h3>使用说明</h3>
+                    <ul>
+                        <li>描述您的症状</li>
+                        <li>回答系统问题</li>
+                        <li>获取科室推荐</li>
+                    </ul>
+                </div>
+                <div class="stage-indicator">
+                    <h3>当前阶段</h3>
+                    <div class="stage-steps">
+                        <div class="step active" data-stage="0">
+                            <span class="step-num">1</span>
+                            <span class="step-label">身体部位</span>
+                        </div>
+                        <div class="step" data-stage="1">
+                            <span class="step-num">2</span>
+                            <span class="step-label">初步症状</span>
+                        </div>
+                        <div class="step" data-stage="2">
+                            <span class="step-num">3</span>
+                            <span class="step-label">具体症状</span>
+                        </div>
+                        <div class="step" data-stage="3">
+                            <span class="step-num">✓</span>
+                            <span class="step-label">完成</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <button class="new-chat-btn" onclick="resetChat()">
+                <span>+</span> 新对话
+            </button>
+        </aside>
+
+        <!-- 主聊天区域 -->
+        <main class="chat-container">
+            <!-- 头部 -->
+            <header class="chat-header">
+                <div class="header-title">
+                    <span class="status-dot"></span>
+                    <span>智能导诊中</span>
+                </div>
+                <div class="header-actions">
+                    <div class="auth-status" id="authStatus">
+                        <span class="auth-status-text" id="authStatusText">未登录</span>
+                        <button class="header-pill-btn" id="loginBtn" onclick="openAuthModal('login')">登录</button>
+                        <button class="header-pill-btn secondary" id="registerBtn" onclick="openAuthModal('register')">注册</button>
+                        <button class="header-pill-btn hidden" id="profileBtn" onclick="openProfilePanel()">个人中心</button>
+                        <button class="header-pill-btn secondary hidden" id="logoutBtn" onclick="logout()">退出</button>
+                    </div>
+                    <button class="icon-btn" onclick="resetChat()" title="重新开始">
+                        🔄
+                    </button>
+                </div>
+            </header>
+
+            <!-- 消息区域 -->
+            <div class="messages-container" id="messages">
+                <!-- 欢迎消息 -->
+                <div class="message system-message">
+                    <div class="message-avatar">🏥</div>
+                    <div class="message-content">
+                        <div class="message-bubble">
+                            <p>您好！我是您的AI导诊助手。</p>
+                            <p>请先登录，然后告诉我您哪里不舒服，我会帮您找到合适的就诊科室。</p>
+                        </div>
+                        <div class="message-time">刚刚</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="userInput" 
+                        placeholder="请输入您的症状..."
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                    ></textarea>
+                    <button class="send-btn" onclick="sendMessage()" id="sendBtn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-hints">
+                    <span>按 Enter 发送，Shift + Enter 换行</span>
+                    <span class="hint-divider">|</span>
+                    <span>输入 <kbd>reset</kbd> 重新开始</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal-overlay hidden" id="authModal">
+        <div class="auth-modal">
+            <div class="panel-header">
+                <h3 id="authModalTitle">登录</h3>
+                <button class="icon-btn" onclick="closeAuthModal()">✕</button>
+            </div>
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="authTabLogin" onclick="switchAuthMode('login')">登录</button>
+                <button class="auth-tab" id="authTabRegister" onclick="switchAuthMode('register')">注册</button>
+            </div>
+            <form class="auth-form" onsubmit="submitAuthForm(event)">
+                <label class="form-label">
+                    <span>用户名</span>
+                    <input type="text" id="authUsername" class="form-input" minlength="3" maxlength="50" required>
+                </label>
+                <label class="form-label">
+                    <span>密码</span>
+                    <input type="password" id="authPassword" class="form-input" minlength="6" required>
+                </label>
+                <div class="form-error hidden" id="authError"></div>
+                <button type="submit" class="primary-action-btn" id="authSubmitBtn">登录</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="side-panel hidden" id="profilePanel">
+        <div class="side-panel-card">
+            <div class="panel-header">
+                <h3>个人中心</h3>
+                <button class="icon-btn" onclick="closeProfilePanel()">✕</button>
+            </div>
+            <div class="profile-section">
+                <div class="profile-row"><span>用户名</span><strong id="profileUsername">-</strong></div>
+                <div class="profile-row"><span>会员状态</span><strong id="profileMembership">free</strong></div>
+                <div class="profile-row"><span>注册时间</span><strong id="profileCreatedAt">-</strong></div>
+                <div class="profile-row"><span>最近登录</span><strong id="profileLastLogin">-</strong></div>
+                <div class="profile-row"><span>历史条数</span><strong id="profileHistoryCount">0</strong></div>
+            </div>
+            <div class="panel-subheader">
+                <h4>历史记录</h4>
+                <button class="header-pill-btn secondary" onclick="loadHistory(true)">刷新</button>
+            </div>
+            <div class="history-list" id="historyList">
+                <div class="empty-state">暂无历史记录</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载动画 -->
+    <div class="loading-overlay" id="loading">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <!-- Capacitor 运行时 -->
+    <script src="capacitor.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
+
