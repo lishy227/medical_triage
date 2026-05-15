@@ -34,10 +34,10 @@ medical_triage/
 │   │   ├── medical.json          # 疾病知识库 (RAG 用)
 │   │   └── loader.py             # 知识库加载器
 │   ├── main.py                   # CLI 入口
-│   ├── web_server.py             # Web 服务入口
+│   ├── web_server.py             # Web 服务入口（已集成社交互动路由）
 │   ├── triage.py                 # 核心导诊引擎
 │   ├── auth.py                   # 用户认证模块
-│   ├── database.py               # 数据库模型
+│   ├── database.py               # 数据库模型（已集成社交模型）
 │   ├── social.py                 # 社交互动模型（评论、点赞）
 │   ├── social_routes.py          # 社交互动 API 路由
 │   ├── config.py                 # 配置管理
