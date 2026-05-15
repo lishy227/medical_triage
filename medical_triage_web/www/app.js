@@ -436,6 +436,9 @@ function addCompleteMessage(text, records, result = {}) {
     const badgeText = detailLevel === 'member' ? '会员详细版' : '基础版';
     const badgeClass = detailLevel === 'member' ? 'detail-badge member' : 'detail-badge basic';
 
+    // 生成唯一的会话ID用于评论
+    const commentTargetId = sessionId || 'default';
+
     const messageDiv = document.createElement('div');
     messageDiv.className = 'message bot-message';
     messageDiv.innerHTML = `
@@ -453,6 +456,11 @@ function addCompleteMessage(text, records, result = {}) {
                     </div>
                     ${summaryBlock}
                     ${detailBlock}
+                    <div class="result-actions">
+                        <button class="comment-trigger-btn" onclick="openCommentsModal('triage', '${commentTargetId}', '导诊评论')">
+                            💬 评论
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="message-time">${getCurrentTime()}</div>
@@ -994,6 +1002,350 @@ window.closeUpgradeModal = closeUpgradeModal;
 window.submitUpgrade = submitUpgrade;
 window.checkServerRestart = checkServerRestart;
 window.startServerCheck = startServerCheck;
+
+// ==================== 社交互动功能（评论、点赞）====================
+
+/** 当前评论目标信息 */
+let currentCommentTarget = { type: null, id: null };
+
+/** 评论分页状态 */
+let commentsPagination = { page: 1, hasMore: true, loading: false };
+
+/**
+ * 打开评论社区（查看所有评论）
+ * 这是一个常驻功能，不依赖特定导诊会话
+ */
+function openCommentsCommunity() {
+    // 使用一个特殊的社区目标
+    openCommentsModal('community', 'general', '💬 评论社区');
+}
+
+/**
+ * 打开评论弹窗
+ * @param {string} targetType - 目标类型（'triage'/'disease'/'community'）
+ * @param {string} targetId - 目标ID
+ * @param {string} title - 弹窗标题
+ */
+function openCommentsModal(targetType, targetId, title = '评论') {
+    currentCommentTarget = { type: targetType, id: targetId };
+    commentsPagination = { page: 1, hasMore: true, loading: false };
+    
+    // 创建弹窗
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay comments-modal-overlay';
+    modal.id = 'commentsModal';
+    modal.innerHTML = `
+        <div class="comments-modal">
+            <div class="comments-modal-header">
+                <h3>${escapeHtml(title)}</h3>
+                <button class="icon-btn" onclick="closeCommentsModal()">✕</button>
+            </div>
+            <div class="comments-list" id="commentsList">
+                <div class="loading-state">加载中...</div>
+            </div>
+            <div class="comments-input-area">
+                <textarea id="commentInput" placeholder="写下你的评论..." rows="2"></textarea>
+                <button class="send-btn" onclick="submitComment()">发送</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    requestAnimationFrame(() => modal.classList.add('active'));
+    
+    // 加载评论列表
+    loadComments();
+}
+
+/**
+ * 关闭评论弹窗
+ */
+function closeCommentsModal() {
+    const modal = document.getElementById('commentsModal');
+    if (modal) {
+        modal.remove();
+    }
+    currentCommentTarget = { type: null, id: null };
+}
+
+/**
+ * 加载评论列表
+ * @param {boolean} append - 是否追加模式（加载更多）
+ */
+async function loadComments(append = false) {
+    if (commentsPagination.loading || (!append && !commentsPagination.hasMore)) return;
+    
+    const { type, id } = currentCommentTarget;
+    if (!type || !id) return;
+    
+    commentsPagination.loading = true;
+    const listEl = document.getElementById('commentsList');
+    
+    if (!append) {
+        listEl.innerHTML = '<div class="loading-state">加载中...</div>';
+    }
+    
+    try {
+        const data = await authFetch(`/api/comments?target_type=${type}&target_id=${id}&page=${commentsPagination.page}&limit=20&sort=hot`);
+        
+        commentsPagination.hasMore = data.has_more;
+        
+        if (!append) {
+            listEl.innerHTML = '';
+        }
+        
+        if (data.items.length === 0 && !append) {
+            listEl.innerHTML = '<div class="empty-state">暂无评论，来写第一条吧~</div>';
+            return;
+        }
+        
+        // 移除加载更多按钮
+        const loadMoreBtn = listEl.querySelector('.load-more-btn');
+        if (loadMoreBtn) loadMoreBtn.remove();
+        
+        // 渲染评论
+        data.items.forEach(comment => {
+            const commentEl = createCommentElement(comment);
+            listEl.appendChild(commentEl);
+        });
+        
+        // 添加加载更多按钮
+        if (data.has_more) {
+            const btn = document.createElement('button');
+            btn.className = 'load-more-btn';
+            btn.textContent = '加载更多';
+            btn.onclick = () => {
+                commentsPagination.page++;
+                loadComments(true);
+            };
+            listEl.appendChild(btn);
+        }
+    } catch (error) {
+        console.error('加载评论失败:', error);
+        if (!append) {
+            listEl.innerHTML = '<div class="empty-state">加载失败，请重试</div>';
+        }
+    } finally {
+        commentsPagination.loading = false;
+    }
+}
+
+/**
+ * 创建评论元素
+ * @param {Object} comment - 评论数据
+ * @returns {HTMLElement}
+ */
+function createCommentElement(comment) {
+    const div = document.createElement('div');
+    div.className = 'comment-item';
+    div.dataset.id = comment.id;
+    
+    const isMember = comment.user?.membership_type === 'member';
+    const memberBadge = isMember ? '<span class="member-badge-small">会员</span>' : '';
+    
+    div.innerHTML = `
+        <div class="comment-header">
+            <span class="comment-author">${escapeHtml(comment.user?.username || '匿名')}${memberBadge}</span>
+            <span class="comment-time">${formatRelativeTime(comment.created_at)}</span>
+        </div>
+        <div class="comment-content">${escapeHtml(comment.content)}</div>
+        <div class="comment-actions">
+            <button class="like-btn ${comment.is_liked ? 'liked' : ''}" onclick="toggleCommentLike(${comment.id}, this)">
+                <span class="like-icon">👍</span>
+                <span class="like-count">${comment.like_count || 0}</span>
+            </button>
+            <button class="reply-btn" onclick="replyToComment(${comment.id}, '${escapeHtml(comment.user?.username || '匿名')}')">回复</button>
+        </div>
+        ${comment.replies?.length ? `
+            <div class="comment-replies">
+                ${comment.replies.map(r => `
+                    <div class="reply-item">
+                        <span class="reply-author">${escapeHtml(r.user?.username || '匿名')}:</span>
+                        <span class="reply-content">${escapeHtml(r.content)}</span>
+                    </div>
+                `).join('')}
+                ${comment.reply_count > 3 ? `<div class="more-replies" onclick="loadReplies(${comment.id})">查看全部 ${comment.reply_count} 条回复</div>` : ''}
+            </div>
+        ` : ''}
+    `;
+    
+    return div;
+}
+
+/**
+ * 提交评论
+ */
+async function submitComment() {
+    const input = document.getElementById('commentInput');
+    const content = input.value.trim();
+    
+    if (!content) {
+        alert('请输入评论内容');
+        return;
+    }
+    
+    if (content.length < 10) {
+        alert('评论内容至少需要10个字符');
+        return;
+    }
+    
+    const { type, id } = currentCommentTarget;
+    if (!type || !id) return;
+    
+    try {
+        const data = await authFetch('/api/comments', {
+            method: 'POST',
+            body: JSON.stringify({
+                target_type: type,
+                target_id: id,
+                content: content
+            })
+        });
+        
+        input.value = '';
+        
+        // 重新加载评论列表
+        commentsPagination.page = 1;
+        loadComments(false);
+        
+    } catch (error) {
+        alert(getErrorMessage(error, '评论失败'));
+    }
+}
+
+/**
+ * 回复评论
+ * @param {number} parentId - 父评论ID
+ * @param {string} username - 被回复用户名称
+ */
+function replyToComment(parentId, username) {
+    const input = document.getElementById('commentInput');
+    input.value = `@${username} `;
+    input.focus();
+    
+    // 修改提交函数以支持回复
+    const originalSubmit = window.submitComment;
+    window.submitComment = async function() {
+        const content = input.value.trim();
+        if (!content) return;
+        
+        const { type, id } = currentCommentTarget;
+        try {
+            await authFetch('/api/comments', {
+                method: 'POST',
+                body: JSON.stringify({
+                    target_type: type,
+                    target_id: id,
+                    content: content,
+                    parent_id: parentId
+                })
+            });
+            
+            input.value = '';
+            commentsPagination.page = 1;
+            loadComments(false);
+            
+            // 恢复原始提交函数
+            window.submitComment = originalSubmit;
+        } catch (error) {
+            alert(getErrorMessage(error, '回复失败'));
+        }
+    };
+}
+
+/**
+ * 切换评论点赞状态
+ * @param {number} commentId - 评论ID
+ * @param {HTMLElement} btn - 点赞按钮元素
+ */
+async function toggleCommentLike(commentId, btn) {
+    const isLiked = btn.classList.contains('liked');
+    const countEl = btn.querySelector('.like-count');
+    let currentCount = parseInt(countEl.textContent) || 0;
+    
+    // 乐观更新UI
+    btn.classList.toggle('liked');
+    countEl.textContent = isLiked ? currentCount - 1 : currentCount + 1;
+    
+    try {
+        if (isLiked) {
+            await authFetch('/api/likes', {
+                method: 'DELETE',
+                body: JSON.stringify({
+                    target_type: 'comment',
+                    target_id: String(commentId)
+                })
+            });
+        } else {
+            await authFetch('/api/likes', {
+                method: 'POST',
+                body: JSON.stringify({
+                    target_type: 'comment',
+                    target_id: String(commentId)
+                })
+            });
+        }
+    } catch (error) {
+        // 失败时恢复UI
+        btn.classList.toggle('liked');
+        countEl.textContent = isLiked ? currentCount : currentCount - 1;
+        console.error('点赞操作失败:', error);
+    }
+}
+
+/**
+ * 加载评论回复
+ * @param {number} commentId - 评论ID
+ */
+async function loadReplies(commentId) {
+    try {
+        const data = await authFetch(`/api/comments/${commentId}/replies?page=1&limit=50`);
+        
+        const commentEl = document.querySelector(`.comment-item[data-id="${commentId}"]`);
+        if (!commentEl) return;
+        
+        const repliesContainer = commentEl.querySelector('.comment-replies');
+        if (repliesContainer) {
+            repliesContainer.innerHTML = data.items.map(r => `
+                <div class="reply-item">
+                    <span class="reply-author">${escapeHtml(r.user?.username || '匿名')}:</span>
+                    <span class="reply-content">${escapeHtml(r.content)}</span>
+                </div>
+            `).join('');
+        }
+    } catch (error) {
+        console.error('加载回复失败:', error);
+    }
+}
+
+/**
+ * 格式化相对时间
+ * @param {string} dateStr - ISO格式时间字符串（UTC）
+ * @returns {string}
+ */
+function formatRelativeTime(dateStr) {
+    if (!dateStr) return '-';
+    // 确保正确解析UTC时间（添加Z后缀表示UTC）
+    const utcDateStr = dateStr.endsWith('Z') ? dateStr : dateStr + 'Z';
+    const date = new Date(utcDateStr);
+    const now = new Date();
+    const diff = Math.floor((now - date) / 1000);
+
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}天前`;
+    return date.toLocaleDateString('zh-CN');
+}
+
+// 暴露到全局
+window.openCommentsModal = openCommentsModal;
+window.closeCommentsModal = closeCommentsModal;
+window.openCommentsCommunity = openCommentsCommunity;
+window.loadComments = loadComments;
+window.submitComment = submitComment;
+window.replyToComment = replyToComment;
+window.toggleCommentLike = toggleCommentLike;
+window.loadReplies = loadReplies;
 
 window.addEventListener('DOMContentLoaded', async () => {
     // 先检查服务器是否重启
