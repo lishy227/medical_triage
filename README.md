@@ -1,356 +1,322 @@
 # AI 医疗导诊系统
 
-一个基于 **Flask + 多阶段导诊引擎 + Web/Capacitor 前端** 的医疗导诊项目，支持：
-- 聊天式分步导诊
-- JWT 用户认证
-- 导诊历史记录
-- 普通用户 / 会员分层结果展示
-- 可选 RAG 检索增强
-- Web 页面与 Android 封装
-- **服务器重启检测与自动退出登录**
+一个基于多智能体协作的 AI 医疗导诊应用，支持 Web 和 Android 双端运行。系统通过自然语言对话收集用户症状信息，智能推荐就诊科室，并为会员用户提供详细的医疗建议。
 
----
+## 📋 项目简介
 
-## 最近更新
+### 解决的问题
 
-### 2025-08-15 新增功能
+- **就医迷茫**：帮助患者根据症状快速找到合适的就诊科室，减少盲目挂号
+- **资源优化**：缓解医院导诊台压力，提升就医效率
+- **健康科普**：为会员用户提供疾病知识、饮食建议等专业健康指导
 
-#### 1. 模拟付费会员系统
-- **普通用户**：仅显示推荐科室，详细建议锁定并提示开通会员
-- **会员用户**：显示完整的疾病分析、治疗建议、饮食指导、费用参考
-- **会员升级**：点击"立即开通会员"按钮即可模拟付费升级（有效期30天）
-- **详细建议来源**：基于 `medical.json` 知识库智能匹配生成
+### 核心功能
 
-#### 2. 服务器重启检测与自动退出登录
-- 后端每次启动生成唯一的服务器实例ID
-- 前端定期检测服务器状态（每30秒）
-- 检测到服务器重启后自动清除登录状态
-- 显示提示"服务器已重启，请重新登录"并刷新页面
-- 确保每次重启后端后用户需要重新输入账号密码
+- 🤖 **AI 智能导诊**：多轮对话收集症状，精准推荐科室
+- 👤 **用户系统**：支持注册登录，保存历史导诊记录
+- 💎 **会员分级**：普通用户基础导诊，会员享受详细医疗建议
+- 📱 **跨平台**：Web 网页 + Android App 双端支持
+- 🔄 **会话管理**：支持重置对话、查看历史记录
 
-#### 3. 登录功能修复
-- 修复了 token 存储键名不一致导致的登录失败问题
-- 修复了错误处理函数不存在的问题
-- 添加了详细的错误日志便于调试
+## 🏗️ 项目结构
 
----
-
----
-
-## 最终交付摘要
-
-本次交付重点完成了“**模拟付费 / 会员功能连接前端**”相关闭环，并进一步完成了前端目录收敛：
-- **保留 `medical_triage_web/www/` 作为唯一正式前端入口**
-- **删除 `medical_triage_web/` 根目录下重复静态文件**
-- **更新后端静态资源入口，改为明确服务 `www/`**
-
-### 已完成内容
-
-#### 1) 第 2 步：会员能力后端输出分层
-已在后端完成普通用户 / 会员用户的结果分层：
-- **普通用户**：返回推荐科室，不返回详细医疗建议
-- **会员用户**：返回推荐科室 + 详细医疗建议
-- 保留兼容字段锚点：`推荐科室:`
-
-对应后端能力：
-- `parse_department_list()`
-- `build_tiered_triage_result()`
-- `/api/chat` 完成态结构化返回
-
-#### 2) 第 3 步：前端接入 JWT 鉴权与分层展示
-前端（现以 `medical_triage_web/www/` 为唯一正式目录）已接入以下接口的 JWT 鉴权：
-- `GET /api/welcome`
-- `POST /api/chat`
-- `POST /api/reset`
-
-前端已支持消费后端结构化字段：
-- `departments`
-- `recommended_department`
-- `detailed_medical_advice`
-- `detail_locked`
-- `detail_level`
-- `conversation_summary`
-- `message`
-
-前端已实现：
-- 普通用户展示“推荐科室 + 详情锁定提示”
-- 会员用户展示“推荐科室 + 详细医疗建议”
-- 兼容旧文本格式 `推荐科室: [...]`
-
-#### 3) 前端目录整理
-已按“方案 A”完成目录收敛：
-- 保留：`medical_triage_web/www/`
-- 删除根目录重复静态文件：
-  - `medical_triage_web/app.js`
-  - `medical_triage_web/index.html`
-  - `medical_triage_web/style.css`
-- 后端 `medical_triage_back/web_server.py` 已改为明确从 `medical_triage_web/www/` 提供静态文件服务
-
-这样可以避免后续出现“改了 A，实际跑的是 B”的双目录漂移问题。
-
-#### 4) 身体部位误判优化
-已优化“身体部位变化检测”逻辑：
-- 不再轻易把症状补充误判为切换身体部位
-- 发现疑似变化时先请求用户确认
-- 避免无谓重置导诊流程
-
-#### 5) 配置加载修复
-已修复 `.env` 加载路径问题：
-- `medical_triage_back/config.py` 现在默认从 **项目后端目录下的 `.env`** 加载
-- 不再依赖当前工作目录
-- 更适合本地运行与部署环境
-
-目标位置：
-- `medical_triage_back/.env`
-
-#### 6) 第 3 步验收已收口
-已将第 3 步改为“**路由级集成验收**”，避免测试被外部模型调用拖慢或阻塞。
-
-最终通过的验收点：
-- `/api/welcome`：未带 token 返回 401；带 token 正常返回
-- `/api/reset`：未带 token 返回 401；带 token 正常返回
-- `/api/chat`：带 token 可正常返回结构化结果，且区分普通用户 / 会员用户
-
-### 当前结论
-如果按“**模拟付费 / 会员功能连接前端**”这个任务本身来算，**现在可以认定为完成**。
-
-> 注：此前真实 `/api/chat` HTTP smoke test 出现过 `TimeoutError: timed out`，其根因更接近外部模型依赖 / API key / provider 问题，不再作为本次前后端接线验收的阻塞项。
-
----
-
-## 项目结构
-
-```text
+```
 medical_triage/
-├─ medical_triage_back/              # Flask 后端、导诊引擎、认证、数据库、测试
-│  ├─ agents/
-│  ├─ tests/
-│  ├─ config.py
-│  ├─ web_server.py
-│  └─ requirements.txt
-├─ medical_triage_web/               # 前端目录（Web + Capacitor）
-│  ├─ www/                           # 唯一正式静态资源目录（当前唯一前端入口）
-│  ├─ android/
-│  ├─ capacitor.config.json
-│  └─ package.json
-├─ app-debug.apk
-├─ DEPLOY.md
-├─ README.md
-└─ requirements.txt                  # 根目录安装入口，转发到后端依赖
+├── medical_triage_back/          # 后端服务 (Python Flask)
+│   ├── agents/                   # AI 智能体模块
+│   │   ├── input_validation_agent.py    # 输入验证智能体
+│   │   ├── body_comparison_agent.py     # 身体部位比对智能体
+│   │   ├── intent_judgment_agent.py     # 意图判断智能体
+│   │   └── question_generation_agent.py # 问题生成智能体
+│   ├── knowledge_base/           # 知识库
+│   │   ├── medical.json          # 疾病知识库 (RAG 用)
+│   │   └── loader.py             # 知识库加载器
+│   ├── main.py                   # CLI 入口
+│   ├── web_server.py             # Web 服务入口
+│   ├── triage.py                 # 核心导诊引擎
+│   ├── auth.py                   # 用户认证模块
+│   ├── database.py               # 数据库模型
+│   ├── config.py                 # 配置管理
+│   └── requirements.txt          # Python 依赖
+│
+└── medical_triage_web/           # 前端应用
+    ├── www/                      # 前端源码
+    │   ├── index.html            # 主页面
+    │   ├── style.css             # 样式文件
+    │   └── app.js                # 前端逻辑
+    ├── capacitor.config.json     # Capacitor 配置
+    └── package.json              # Node.js 依赖
 ```
 
----
+## 🚀 运行方式
 
-## 关键文件说明
+### 后端服务
 
-### 后端
-
-#### `medical_triage_back/web_server.py`
-Flask 服务入口，负责：
-- API 路由
-- JWT 鉴权
-- 会话管理
-- **会员分层结果返回（基于 medical.json 生成详细建议）**
-- **服务器实例管理（重启检测）**
-- 历史记录保存
-- 从 `medical_triage_web/www/` 提供静态文件
-
-#### `medical_triage_back/triage.py`
-导诊主流程核心，负责：
-- 身体部位识别
-- 初步症状识别
-- 具体症状追问
-- 导诊结果生成
-- 身体部位变化确认逻辑
-
-#### `medical_triage_back/agents/body_comparison_agent.py`
-身体部位变化检测逻辑。
-
-#### `medical_triage_back/config.py`
-配置加载模块，当前支持项目相对路径加载 `.env`。
-
-#### `medical_triage_back/tests/test_membership_step2_acceptance.py`
-第 2 步会员分层后端验收测试。
-
-#### `medical_triage_back/tests/test_step3_route_integration.py`
-第 3 步路由级集成验收测试。
-
-### 前端
-
-#### `medical_triage_web/www/index.html`
-正式前端页面入口。
-
-#### `medical_triage_web/www/app.js`
-前端核心逻辑，负责：
-- 获取 / 保存 token
-- 发送 `/api/welcome`、`/api/chat`、`/api/reset`
-- **渲染普通用户 / 会员用户差异化结果**
-- **服务器重启检测与自动退出登录**
-- **会员升级弹窗与支付模拟**
-- 兼容结构化返回和旧文本锚点
-
-#### `medical_triage_web/www/style.css`
-导诊结果卡片、会员提示、详细建议区等样式。
-
-#### `medical_triage_web/capacitor.config.json`
-Capacitor 配置文件，`webDir` 指向 `www`。
-
----
-
-## 已验证能力
-
-### 导诊流程
-- 多阶段导诊问答
-- 身体部位变化确认
-- 导诊完成后输出推荐科室
-- 对话状态管理
-- 会话重置
-
-### 用户与会员系统
-- 用户注册
-- 用户登录
-- JWT 认证
-- 会员状态识别
-- 普通用户 / 会员分层结果
-- 历史记录保存
-- **服务器重启检测与自动退出登录**
-
-### 会员系统（新增）
-- **普通用户**：仅显示推荐科室，详细建议锁定
-- **会员用户**：显示完整疾病分析、治疗建议、饮食指导、费用参考
-- **模拟付费升级**：点击开通会员即可升级为会员（有效期30天）
-- **会员权益**：
-  - 📊 详细疾病分析报告
-  - 🩺 专业治疗建议
-  - 🍽️ 个性化饮食指导
-  - 💊 用药参考信息
-  - ⏱️ 治疗周期预估
-  - 💰 费用参考信息
-
-### API 能力
-- `GET /api/welcome`
-- `POST /api/chat`
-- `POST /api/reset`
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/profile`
-- `GET /api/user/center`
-- `GET /api/user/history`
-- `POST /api/membership/upgrade` - 会员升级
-- `GET /api/membership/status` - 会员状态查询
-- `GET /api/server/info` - 服务器信息（用于检测重启）
-
----
-
-## 安装与运行
-
-### 1. 安装 Python 依赖
-
-在项目根目录执行：
-
-```bash
-pip install -r requirements.txt
-```
-
-或在后端目录执行：
+#### 1. 环境准备
 
 ```bash
 cd medical_triage_back
+
+# 创建虚拟环境（推荐）
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# 或 venv\Scripts\activate  # Windows
+
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-### 2. 配置环境变量
+#### 2. 配置环境变量
 
-建议在 `medical_triage_back/.env` 中配置：
+创建 `.env` 文件：
 
 ```env
-API_KEY=your_api_key
-BASE_URL=your_llm_base_url
-MODEL=your_model_name
+#大语言模型配置
+API_KEY="你的API KEY"
+BASE_URL="对应的url"
+MODEL="模型名称"
+
+# 数据库配置
+# 本地开发使用 SQLite（无需安装MySQL）：
 DATABASE_URL=sqlite:///medical_triage.db
-JWT_SECRET_KEY=change-this-in-production
+# 生产环境使用 MySQL：
+# DATABASE_URL=mysql+pymysql://root:password@localhost/medical_triage
+
+# JWT配置
+JWT_SECRET_KEY=your-secret-key-change-this-in-production
 JWT_ACCESS_TOKEN_EXPIRE_DAYS=30
 ```
 
-### 3. 启动后端
+> 获取 API Key：[阿里云 DashScope](https://dashscope.aliyun.com/)
+
+#### 3. 启动服务
+
+```bash
+# Web 服务（推荐）
+python web_server.py
+
+# 或 CLI 交互模式
+python main.py
+```
+
+Web 服务默认运行在 `http://localhost:5001`
+
+### 前端应用
+
+#### Web 网页
+
+```bash
+cd medical_triage_web
+
+# 安装依赖
+npm install
+
+# 开发模式（直接打开 index.html 即可）
+# 或使用本地服务器
+npx serve www
+```
+
+#### Android App
+
+```bash
+cd medical_triage_web
+
+# 安装依赖
+npm install
+
+# 添加 Android 平台
+npx cap add android
+
+# 同步资源
+npx cap sync
+
+# 打开 Android Studio
+npx cap open android
+
+# 在 Android Studio 中构建 APK
+# Build → Build Bundle(s) / APK(s) → Build APK(s)
+```
+
+详细构建指南：[BUILD.md](medical_triage_web/BUILD.md)
+
+## 🛠️ 技术栈
+
+### 后端
+
+| 技术 | 用途 |
+|------|------|
+| **Python 3.10+** | 主开发语言 |
+| **Flask** | Web 框架 |
+| **Flask-CORS** | 跨域支持 |
+| **SQLAlchemy** | ORM 数据库操作 |
+| **PyMySQL** | MySQL 驱动 |
+| **PyJWT** | JWT 认证 |
+| **bcrypt** | 密码加密 |
+| **OpenAI SDK** | 调用大模型 API |
+| **DashScope** | 阿里云大模型服务 |
+
+### 前端
+
+| 技术 | 用途 |
+|------|------|
+| **HTML5** | 页面结构 |
+| **CSS3** | 样式设计 |
+| **JavaScript (ES6+)** | 交互逻辑 |
+| **Capacitor** | 混合应用框架（Android） |
+| **Fetch API** | HTTP 请求 |
+
+### 数据库
+
+- **SQLite**（开发环境）
+- **MySQL**（生产环境，可选）
+
+
+## 🧠 核心架构
+
+### 多智能体协作流程
+
+```
+用户输入
+    ↓
+[输入验证智能体] ──→ 判断输入类型（身体部位/症状/无关）
+    ↓
+[身体部位比对智能体] ──→ 检测是否切换身体部位
+    ↓
+[意图判断智能体] ──→ 匹配用户意图与选项
+    ↓
+[问题生成智能体] ──→ 生成下一轮询问
+    ↓
+返回回复
+```
+
+### 导诊阶段
+
+1. **阶段 0 - 身体部位**：询问用户哪里不舒服
+2. **阶段 1 - 初步症状**：询问大致症状类型
+3. **阶段 2 - 具体症状**：询问具体症状描述
+4. **阶段 3 - 完成**：推荐就诊科室
+
+### 会员分层
+
+| 功能 | 普通用户 | 会员用户 |
+|------|----------|----------|
+| 基础导诊 | ✅ | ✅ |
+| 科室推荐 | ✅ | ✅ |
+| 历史记录 | ✅ | ✅ |
+| 疾病分析 | ❌ | ✅ |
+| 治疗建议 | ❌ | ✅ |
+| 饮食指导 | ❌ | ✅ |
+
+## 📡 API 接口
+
+### 认证接口
+
+- `POST /api/auth/register` - 用户注册
+- `POST /api/auth/login` - 用户登录
+- `POST /api/auth/logout` - 用户登出
+- `GET /api/auth/profile` - 获取用户信息
+
+### 导诊接口
+
+- `GET /api/welcome` - 获取欢迎消息
+- `POST /api/chat` - 发送消息（核心接口）
+- `POST /api/reset` - 重置会话
+
+### 会员接口
+
+- `POST /api/membership/upgrade` - 升级会员
+- `GET /api/membership/status` - 获取会员状态
+
+### 用户中心
+
+- `GET /api/user/center` - 个人中心
+- `GET /api/user/history` - 历史记录
+
+### 系统接口
+
+- `GET /api/server/info` - 服务器信息（用于重启检测）
+
+## 🔐 安全特性
+
+- **JWT 认证**：基于 Token 的无状态认证
+- **密码加密**：使用 bcrypt 存储密码哈希
+- **输入验证**：多层输入校验，防止注入攻击
+- **CORS 保护**：跨域请求控制
+- **服务器重启检测**：自动检测后端重启并退出登录
+
+## 📝 配置说明
+
+### 后端配置 (config.py)
+
+```python
+# 大模型配置
+DASHSCOPE_API_KEY = "your_api_key"  # 从环境变量读取
+BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+MODEL = "qwen-turbo"
+
+# 数据文件
+DATA_FILE = "table.json"  # 症状-科室映射表
+ENCODING = "utf-8"
+
+# 身体部位列表
+BODY_TYPES = ["头部", "胸部", "腹部", "四肢", "皮肤", "其他"]
+```
+
+### 前端配置 (app.js)
+
+```javascript
+// API 基础地址
+const API_BASE = "http://localhost:5001";  // 开发环境
+// const API_BASE = "http://your-server:5001";  // 生产环境
+```
+
+## 🧪 测试
 
 ```bash
 cd medical_triage_back
-python web_server.py
+
+# 运行测试
+python -m pytest tests/
 ```
 
-已验证可用的本地启动方式示例：
+## 📦 部署
+
+### 使用 Gunicorn（生产环境）
 
 ```bash
-C:\Users\25484\anaconda3\envs\daozhen\python.exe web_server.py
+gunicorn -w 4 -b 0.0.0.0:5001 web_server:app
 ```
 
-### 4. 前端使用方式
+### Docker 部署（可选）
 
-当前唯一正式前端目录为：
-
-```text
-medical_triage_web/www/
+```dockerfile
+# Dockerfile 示例
+FROM python:3.10-slim
+WORKDIR /app
+COPY medical_triage_back/requirements.txt .
+RUN pip install -r requirements.txt
+COPY medical_triage_back/ .
+CMD ["python", "web_server.py"]
 ```
 
-如果通过后端访问静态页面，请启动 Flask 服务后访问对应根路径。
-如果通过 Capacitor 打包，`webDir` 已指向 `www`，无需额外切换。
+## 🤝 贡献指南
+
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 创建 Pull Request
+
+## 📄 许可证
+
+本项目仅供学习和研究使用，不得用于商业医疗诊断。
+
+## ⚠️ 免责声明
+
+本系统提供的导诊建议仅供参考，不能替代专业医生的诊断。如有身体不适，请及时就医。
 
 ---
 
-## 测试
-
-### 第 2 步验收
-
-```bash
-python -m unittest medical_triage_back.tests.test_membership_step2_acceptance -v
-```
-
-### 第 3 步验收
-
-```bash
-python -m unittest medical_triage_back.tests.test_step3_route_integration -v
-```
-
-### 身体部位变化回归测试
-
-```bash
-python -m unittest medical_triage_back.tests.test_body_change_regression -v
-```
-
----
-
-## 注意事项
-
-1. **真实 `/api/chat` 调用仍依赖外部模型服务**
-   - 若外部 provider 不稳定、API key 缺失或网络异常，可能出现超时或 401/403。
-   - 这与“前后端接线是否完成”是两类问题，需要分开判断。
-
-2. **建议优先检查 `.env`**
-   - 尤其是 `API_KEY`、`BASE_URL`、`MODEL`、`JWT_SECRET_KEY`。
-
-3. **当前已完成单前端目录收敛**
-   - 正式入口：`medical_triage_web/www/`
-   - 后端静态服务已适配 `www/`
-   - 不应再在 `medical_triage_web/` 根目录新增重复静态页面文件
-
-4. **服务器重启检测机制**
-   - 后端每次启动生成唯一的 `SERVER_INSTANCE_ID`
-   - 前端每30秒检测一次服务器状态
-   - 检测到服务器重启后自动退出登录，要求重新输入账号密码
-
-5. **如果曾在调试中暴露过测试密钥，建议立即轮换**。
-
----
-
-## 免责声明
-
-本项目用于 **AI 导诊辅助与分诊推荐**，不能替代医生诊断。
-
-系统输出仅适合作为：
-- 就医分流参考
-- 初步信息收集工具
-- 辅助交互系统
-
-如遇急症、重症或复杂情况，请及时前往正规医疗机构就诊。
+**作者**：lishy227
+**版本**：v1.0.0  
+**更新日期**：2026-05-15
