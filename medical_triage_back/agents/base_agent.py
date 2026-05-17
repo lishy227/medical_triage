@@ -14,12 +14,13 @@ class BaseAgent(ABC):
         self.client: OpenAI = client
         self.model: str = model
     
-    def _call_llm(self, messages: List[Dict[str, str]]) -> str:
-        """调用LLM"""
+    def _call_llm(self, messages: List[Dict[str, str]], timeout: float = 30.0) -> str:
+        """调用LLM，带超时设置"""
         try:
             completion: Any = self.client.chat.completions.create(
                 model=self.model,
-                messages=messages
+                messages=messages,
+                timeout=timeout
             )
             return completion.choices[0].message.content
         except Exception as e:

@@ -406,41 +406,33 @@ def welcome():
 import json
 import os
 import random
-from typing import List, Dict, Any
+import threading
+import time
+from typing import List, Dict, Any, Optional
 from functools import lru_cache
 
-# 全局缓存变量
+# 全局缓存变量 - 使用线程安全的方式
 _diseases_cache = None
 _cache_file_path = None
 _cache_mtime = None
+_cache_lock = threading.Lock()
+_cache_loaded = False
 
-def _load_medical_json(medical_file: str) -> List[Dict]:
+def _load_medical_json_async(medical_file: str):
     """
-    加载 medical.json 文件，带缓存机制
-    使用文件修改时间判断是否需要重新加载
+    异步加载 medical.json 文件到缓存
+    在后台线程中执行，避免阻塞主线程
     """
-    global _diseases_cache, _cache_file_path, _cache_mtime
+    global _diseases_cache, _cache_file_path, _cache_mtime, _cache_loaded
     
-    # 检查缓存是否有效（文件未修改且路径相同）
-    if (_diseases_cache is not None and 
-        _cache_file_path == medical_file):
-        try:
-            current_mtime = os.path.getmtime(medical_file)
-            if current_mtime == _cache_mtime:
-                return _diseases_cache
-        except OSError:
-            pass  # 文件可能不存在，继续重新加载
-    
-    # 重新加载文件
-    diseases = []
     try:
         # 检查文件大小，提前预警
         file_size = os.path.getsize(medical_file)
         if file_size > 50 * 1024 * 1024:  # 大于50MB
-            print(f"警告: medical.json 文件较大 ({file_size / 1024 / 1024:.1f}MB)，加载可能需要一些时间")
+            print(f"警告: medical.json 文件较大 ({file_size / 1024 / 1024:.1f}MB)，将在后台加载")
         
+        diseases = []
         with open(medical_file, 'r', encoding='utf-8') as f:
-            # 使用生成器逐行读取，减少内存峰值
             for line in f:
                 line = line.strip()
                 if not line:
@@ -450,17 +442,65 @@ def _load_medical_json(medical_file: str) -> List[Dict]:
                     diseases.append(disease)
                 except json.JSONDecodeError:
                     continue
+                
+                # 每加载1000条让出时间片，避免阻塞
+                if len(diseases) % 1000 == 0:
+                    time.sleep(0.001)
         
-        # 更新缓存
-        _diseases_cache = diseases
-        _cache_file_path = medical_file
-        _cache_mtime = os.path.getmtime(medical_file)
+        # 线程安全地更新缓存
+        with _cache_lock:
+            _diseases_cache = diseases
+            _cache_file_path = medical_file
+            _cache_mtime = os.path.getmtime(medical_file)
+            _cache_loaded = True
+        
+        print(f"医学知识库加载完成，共 {len(diseases)} 条记录")
         
     except Exception as e:
         print(f"加载 medical.json 失败: {e}")
-        return []
+
+def _start_medical_json_loader(medical_file: str):
+    """启动后台线程加载 medical.json"""
+    global _cache_loaded
     
-    return diseases
+    with _cache_lock:
+        if _cache_loaded:
+            return  # 已经加载过了
+    
+    # 启动后台线程加载
+    loader_thread = threading.Thread(
+        target=_load_medical_json_async,
+        args=(medical_file,),
+        daemon=True,
+        name="MedicalJsonLoader"
+    )
+    loader_thread.start()
+    print(f"正在后台加载医学知识库: {medical_file}")
+
+def _load_medical_json(medical_file: str) -> List[Dict]:
+    """
+    获取 medical.json 数据（从缓存或等待加载完成）
+    如果缓存未加载完成，返回空列表
+    """
+    global _diseases_cache, _cache_file_path, _cache_mtime
+    
+    with _cache_lock:
+        # 检查缓存是否有效
+        if (_diseases_cache is not None and 
+            _cache_file_path == medical_file):
+            try:
+                current_mtime = os.path.getmtime(medical_file)
+                if current_mtime == _cache_mtime:
+                    return _diseases_cache
+            except OSError:
+                pass
+        
+        # 缓存未加载或已过期
+        if not _cache_loaded:
+            print("警告: 医学知识库尚未加载完成，详细建议功能暂时不可用")
+            return []
+    
+    return []
 
 def generate_detailed_advice(body_part: str, initial_symptom: str, specific_symptom: str, departments: List[str]) -> Dict[str, Any]:
     """
@@ -499,6 +539,23 @@ def generate_detailed_advice(body_part: str, initial_symptom: str, specific_symp
     medical_file = os.path.join(BASE_DIR, 'knowledge_base', 'medical.json')
     diseases = _load_medical_json(medical_file)
     
+    # 如果知识库尚未加载完成，返回提示信息
+    if not diseases:
+        return {
+            'possible_diseases': [],
+            'diet_suggestions': {
+                'recommended': ['清淡饮食', '多喝水'],
+                'avoid': ['辛辣刺激食物', '油腻食物']
+            },
+            'general_tips': [
+                '医学知识库正在加载中，详细建议暂时不可用',
+                '建议及时就医，进行专业检查',
+                '注意休息，避免过度劳累',
+                '如症状加重，请立即前往急诊'
+            ],
+            'loading': True
+        }
+
     # 根据症状匹配相关疾病
     matched_diseases = []
     search_terms = [body_part, initial_symptom, specific_symptom]
@@ -773,4 +830,13 @@ if __name__ == '__main__':
     print('=' * 50)
     print('访问地址: http://localhost:5001')
     print('=' * 50)
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    
+    # 启动后台线程加载医学知识库，避免阻塞主线程
+    medical_file = os.path.join(BASE_DIR, 'knowledge_base', 'medical.json')
+    if os.path.exists(medical_file):
+        _start_medical_json_loader(medical_file)
+    else:
+        print(f"警告: 医学知识库文件不存在: {medical_file}")
+    
+    # 使用 threaded=True 启用多线程模式，避免单线程阻塞
+    app.run(host='0.0.0.0', port=5001, debug=False, threaded=True)

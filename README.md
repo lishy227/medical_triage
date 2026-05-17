@@ -35,6 +35,7 @@ medical_triage/
 │   │   └── loader.py             # 知识库加载器
 │   ├── main.py                   # CLI 入口
 │   ├── web_server.py             # Web 服务入口（已集成社交互动路由）
+│   ├── deploy.py                 # 生产环境部署脚本（Waitress）
 │   ├── triage.py                 # 核心导诊引擎
 │   ├── auth.py                   # 用户认证模块
 │   ├── database.py               # 数据库模型（已集成社交模型）
@@ -95,6 +96,8 @@ JWT_ACCESS_TOKEN_EXPIRE_DAYS=30
 
 #### 3. 启动服务
 
+**开发环境（本地测试）**
+
 ```bash
 # Web 服务（推荐）
 python web_server.py
@@ -104,6 +107,49 @@ python main.py
 ```
 
 Web 服务默认运行在 `http://localhost:5001`
+
+**生产环境（云服务器部署）**
+
+生产环境使用 Waitress 作为 WSGI 服务器，支持 Windows、Linux、Mac 全平台：
+
+```bash
+# 使用部署脚本一键启动（自动安装依赖）
+python deploy.py
+
+# 或手动启动
+pip install waitress
+waitress-serve --host=0.0.0.0 --port=5001 --threads=4 web_server:app
+```
+
+**部署说明**
+
+- 系统采用后台异步加载医学知识库，启动后即可立即响应 API 请求
+- LLM 调用默认 30 秒超时，防止因网络问题导致请求挂起
+- 会员详细建议功能在知识库加载完成后自动可用，加载期间返回通用建议
+- Waitress 是纯 Python 实现，跨平台兼容，无需额外配置
+
+**常见问题：前端无法连接**
+
+1. **检查防火墙/安全组**（最常见原因）
+   ```bash
+   # Ubuntu 放行 5001 端口
+   sudo ufw allow 5001
+   
+   # CentOS 放行 5001 端口
+   sudo firewall-cmd --permanent --add-port=5001/tcp
+   sudo firewall-cmd --reload
+   ```
+   云服务器还需在控制台配置安全组规则
+
+2. **运行诊断工具**
+   ```bash
+   python diagnose.py
+   ```
+
+3. **测试后端是否可访问**
+   ```bash
+   curl http://<服务器IP>:5001/api/server/info
+   ```
 
 ### 前端应用
 
@@ -156,8 +202,9 @@ npx cap open android
 | **PyMySQL** | MySQL 驱动 |
 | **PyJWT** | JWT 认证 |
 | **bcrypt** | 密码加密 |
-| **OpenAI SDK** | 调用大模型 API |
+| **OpenAI SDK** | 调用大模型 API（带超时控制） |
 | **DashScope** | 阿里云大模型服务 |
+| **Waitress** | 生产环境 WSGI 服务器（跨平台） |
 
 ### 前端
 
@@ -254,7 +301,7 @@ npx cap open android
 
 - `GET /api/server/info` - 服务器信息（用于重启检测）
 
-## 🔐 安全特性
+## 🔐 安全与性能特性
 
 - **JWT 认证**：基于 Token 的无状态认证
 - **密码加密**：使用 bcrypt 存储密码哈希
@@ -262,6 +309,9 @@ npx cap open android
 - **敏感词过滤**：评论内容自动过滤不当信息
 - **CORS 保护**：跨域请求控制
 - **服务器重启检测**：自动检测后端重启并退出登录
+- **异步知识库加载**：大型医学知识库后台加载，不阻塞服务启动
+- **LLM 超时控制**：API 调用 30 秒超时，防止请求挂起
+- **多线程并发**：生产环境支持多线程并发处理请求
 
 ## 📝 配置说明
 
@@ -300,10 +350,43 @@ python -m pytest tests/
 
 ## 📦 部署
 
-### 使用 Gunicorn（生产环境）
+### 生产环境部署（推荐）
+
+系统使用 Waitress 作为 WSGI 服务器，支持 Windows、Linux、Mac 全平台统一部署：
+
+**快速部署（推荐）**
 
 ```bash
-gunicorn -w 4 -b 0.0.0.0:5001 web_server:app
+# 使用部署脚本一键启动（自动安装 waitress）
+python deploy.py
+```
+
+**手动部署**
+
+```bash
+# 安装 waitress
+pip install waitress
+
+# 启动服务（4线程，60秒超时）
+waitress-serve --host=0.0.0.0 --port=5001 --threads=4 web_server:app
+```
+
+**Nginx 反向代理配置示例**
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+    
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
 ```
 
 ### Docker 部署（可选）
@@ -338,4 +421,4 @@ CMD ["python", "web_server.py"]
 
 **作者**：lishy227  
 **版本**：v1.0.0  
-**更新日期**：2026-05-15
+**更新日期**：2026-05-17

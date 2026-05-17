@@ -22,7 +22,11 @@
  * - 本地开发: http://localhost:5001
  * - 阿里云服务器: http://47.107.108.157:5001
  */
-const API_BASE = "http://localhost:5001";
+// API 基础地址配置
+// 开发环境使用 localhost，生产环境使用实际服务器地址
+const API_BASE = window.location.hostname === 'localhost' 
+    ? "http://localhost:5001" 
+    : `http://${window.location.hostname}:5001`;
 
 // ==================== Capacitor支持 ====================
 
