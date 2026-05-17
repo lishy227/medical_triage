@@ -154,7 +154,7 @@ def validate_comment_content(content: str) -> tuple[bool, str]:
     验证评论内容
     
     检查规则：
-    - 长度：10-500字符
+    - 长度：1-500字符
     - 敏感词过滤
     - 重复内容检测（简单实现）
     
@@ -167,8 +167,8 @@ def validate_comment_content(content: str) -> tuple[bool, str]:
     if not content:
         return False, '评论内容不能为空'
     
-    if len(content) < 10:
-        return False, '评论内容至少需要10个字符'
+    if len(content) < 1:
+        return False, '评论内容至少需要1个字符'
     
     if len(content) > 500:
         return False, '评论内容不能超过500个字符'

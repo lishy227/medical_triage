@@ -1183,8 +1183,8 @@ async function submitComment() {
         return;
     }
     
-    if (content.length < 10) {
-        alert('评论内容至少需要10个字符');
+    if (content.length < 1) {
+        alert('评论内容至少需要1个字符');
         return;
     }
     
