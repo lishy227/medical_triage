@@ -48,6 +48,13 @@ SERVER_INSTANCE_ID = str(uuid.uuid4())
 engine = init_database()
 SessionLocal = get_session_factory(engine)
 
+# 打印数据库连接信息（调试用）
+print(f"数据库连接: {engine.url}")
+if 'sqlite' in str(engine.url):
+    print("警告: 当前使用 SQLite 数据库")
+else:
+    print(f"使用 MySQL 数据库: {engine.url.database}")
+
 # 存储导诊会话引擎（内存中，按session_id索引）
 sessions: Dict[str, TriageEngine] = {}
 

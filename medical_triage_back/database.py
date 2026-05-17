@@ -33,6 +33,28 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import os
 
+# 加载 .env 文件（不依赖 config 模块，避免循环导入）
+def _load_env_file():
+    """从 .env 文件加载环境变量"""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    try:
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # 只在环境变量未设置时才设置
+                    if key not in os.environ:
+                        os.environ[key] = value
+    except FileNotFoundError:
+        pass
+
+_load_env_file()
+
 # 创建声明式基类，用于定义数据模型
 Base = declarative_base()
 
