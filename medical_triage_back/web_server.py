@@ -403,6 +403,65 @@ def welcome():
 
 # ==================== 会员系统 - 详细建议生成 ====================
 
+import json
+import os
+import random
+from typing import List, Dict, Any
+from functools import lru_cache
+
+# 全局缓存变量
+_diseases_cache = None
+_cache_file_path = None
+_cache_mtime = None
+
+def _load_medical_json(medical_file: str) -> List[Dict]:
+    """
+    加载 medical.json 文件，带缓存机制
+    使用文件修改时间判断是否需要重新加载
+    """
+    global _diseases_cache, _cache_file_path, _cache_mtime
+    
+    # 检查缓存是否有效（文件未修改且路径相同）
+    if (_diseases_cache is not None and 
+        _cache_file_path == medical_file):
+        try:
+            current_mtime = os.path.getmtime(medical_file)
+            if current_mtime == _cache_mtime:
+                return _diseases_cache
+        except OSError:
+            pass  # 文件可能不存在，继续重新加载
+    
+    # 重新加载文件
+    diseases = []
+    try:
+        # 检查文件大小，提前预警
+        file_size = os.path.getsize(medical_file)
+        if file_size > 50 * 1024 * 1024:  # 大于50MB
+            print(f"警告: medical.json 文件较大 ({file_size / 1024 / 1024:.1f}MB)，加载可能需要一些时间")
+        
+        with open(medical_file, 'r', encoding='utf-8') as f:
+            # 使用生成器逐行读取，减少内存峰值
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    disease = json.loads(line)
+                    diseases.append(disease)
+                except json.JSONDecodeError:
+                    continue
+        
+        # 更新缓存
+        _diseases_cache = diseases
+        _cache_file_path = medical_file
+        _cache_mtime = os.path.getmtime(medical_file)
+        
+    except Exception as e:
+        print(f"加载 medical.json 失败: {e}")
+        return []
+    
+    return diseases
+
 def generate_detailed_advice(body_part: str, initial_symptom: str, specific_symptom: str, departments: List[str]) -> Dict[str, Any]:
     """
     基于 medical.json 生成详细医疗建议（会员专享功能）
@@ -438,19 +497,7 @@ def generate_detailed_advice(body_part: str, initial_symptom: str, specific_symp
     
     # 加载 medical.json
     medical_file = os.path.join(BASE_DIR, 'knowledge_base', 'medical.json')
-    diseases = []
-    try:
-        with open(medical_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        disease = json.loads(line)
-                        diseases.append(disease)
-                    except json.JSONDecodeError:
-                        continue
-    except Exception as e:
-        print(f"加载 medical.json 失败: {e}")
+    diseases = _load_medical_json(medical_file)
     
     # 根据症状匹配相关疾病
     matched_diseases = []

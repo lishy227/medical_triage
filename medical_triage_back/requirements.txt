@@ -16,7 +16,6 @@ langchain-core==1.2.22
 langsmith==0.7.22
 openai==2.29.0
 orjson==3.11.7
-packaging @ file:///C:/miniconda3/conda-bld/packaging_1761049096285/work
 pydantic==2.12.5
 pydantic_core==2.41.5
 python-dotenv==1.2.2
