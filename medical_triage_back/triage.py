@@ -16,14 +16,12 @@
 RAG增强（可选）：
 - DiseaseRAGRetriever: 检索相关疾病
 - DiseaseExplanationGenerator: 生成疾病解释和建议
-
-数据流：
-用户输入 → 输入验证 → 身体部位比对 → 意图判断 → 推进阶段/生成问题 → 返回回复
 """
 import json
-from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
@@ -36,22 +34,29 @@ from agents.question_generation_agent import QuestionGenerationAgent
 # RAG模块导入（可选，失败时不影响原有功能）
 try:
     from rag_retriever import DiseaseRAGRetriever, DiseaseExplanationGenerator
+
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
-    print("警告: RAG模块未加载，将使用基础导诊功能")
+    DiseaseRAGRetriever = None
+    DiseaseExplanationGenerator = None
+
+# RAG 系统单例缓存（避免每个请求重复加载 8000+ 条知识库）
+_RAG_SYSTEM_CACHE = None
+
+
+def get_rag_system():
+    """获取 RAG 系统单例（首次调用加载，后续命中缓存）"""
+    global _RAG_SYSTEM_CACHE
+    if _RAG_SYSTEM_CACHE is None:
+        from rag_retriever import create_rag_system
+
+        _RAG_SYSTEM_CACHE = create_rag_system()
+    return _RAG_SYSTEM_CACHE
 
 
 class Stage(IntEnum):
-    """
-    导诊阶段枚举
-    
-    定义导诊流程的四个阶段：
-    - BODY_PART (0): 询问身体部位阶段
-    - INITIAL_SYMPTOM (1): 询问初步症状阶段
-    - SPECIFIC_SYMPTOM (2): 询问具体症状阶段
-    - COMPLETED (3): 导诊完成阶段
-    """
+    """导诊阶段枚举"""
     BODY_PART = 0
     INITIAL_SYMPTOM = 1
     SPECIFIC_SYMPTOM = 2
@@ -60,214 +65,174 @@ class Stage(IntEnum):
 
 @dataclass
 class TriageState:
-    """
-    导诊状态数据类
-    
-    存储单个导诊会话的完整状态，包括：
-    - stage: 当前导诊阶段
-    - records: 已收集的信息 [身体部位, 初步症状, 具体症状]
-    - options: 当前阶段的可选项列表
-    - messages: 对话历史（用于上下文理解）
-    - pending_body_change: 待确认的身体部位变更（如果有）
-    
-    使用dataclass简化定义，自动实现__init__等方法。
-    """
+    """导诊状态数据类"""
     stage: Stage = Stage.BODY_PART
-    records: List[str] = field(default_factory=list)  # [身体部位, 初步症状, 具体症状]
-    options: List[str] = field(default_factory=list)  # 当前阶段的可选项
-    messages: List[Dict[str, str]] = field(default_factory=list)  # 对话历史
-    pending_body_change: Optional[Dict[str, Any]] = None  # 待确认的身体部位变更
-    
+    records: List[str] = field(default_factory=list)
+    options: List[str] = field(default_factory=list)
+    messages: List[Dict[str, str]] = field(default_factory=list)
+    pending_body_change: Optional[Dict[str, Any]] = None
+
     def reset(self, initial_options: List[str]) -> None:
         """重置状态"""
         self.stage = Stage.BODY_PART
         self.records = []
-        self.options = initial_options
+        self.options = initial_options.copy()
         self.messages = []
         self.pending_body_change = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化为纯 dict（Stage enum → int，可安全 JSON 序列化）"""
+        return {
+            "stage": int(self.stage),
+            "records": list(self.records),
+            "options": list(self.options),
+            "messages": list(self.messages),
+            "pending_body_change": (
+                dict(self.pending_body_change) if self.pending_body_change else None
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TriageState":
+        """从 dict 反序列化"""
+        return cls(
+            stage=Stage(data.get("stage", 0)),
+            records=data.get("records", []),
+            options=data.get("options", []),
+            messages=data.get("messages", []),
+            pending_body_change=data.get("pending_body_change"),
+        )
+
 
 class SymptomRepository:
-    """
-    症状数据仓库
-    
-    从JSON文件加载症状-科室映射数据，提供查询接口：
-    - 根据身体部位查询初步症状列表
-    - 根据身体部位和初步症状查询具体症状列表
-    - 根据完整信息查询推荐科室
-    
-    数据格式（table.json）：
-    [
-        {
-            "身体部位": "头部",
-            "初步症状": "头痛",
-            "具体症状": "偏头痛",
-            "推荐科室": "神经内科"
-        },
-        ...
-    ]
-    """
-    
+    """症状数据仓库 - 从JSON文件加载症状-科室映射数据（模块级单例）"""
+
+    _instance: Optional["SymptomRepository"] = None
+
     def __init__(self, data_file: str, encoding: str = "utf-8") -> None:
-        """
-        初始化症状数据仓库
-        
-        Args:
-            data_file: JSON数据文件路径
-            encoding: 文件编码，默认utf-8
-        """
         self._data: List[Dict[str, Any]] = self._load_data(data_file, encoding)
+
+    @classmethod
+    def get_instance(cls, data_file: str = "table.json", encoding: str = "utf-8") -> "SymptomRepository":
+        """获取单例实例（避免每次构造 TriageEngine 重复加载 table.json）"""
+        if cls._instance is None:
+            cls._instance = cls(data_file, encoding)
+        return cls._instance
     
     def _load_data(self, file_path: str, encoding: str) -> List[Dict[str, Any]]:
-        """
-        加载JSON数据文件
-        
-        Args:
-            file_path: 文件路径
-            encoding: 文件编码
-            
-        Returns:
-            解析后的JSON数据列表，如果加载失败返回空列表
-        """
+        """加载JSON数据文件"""
         try:
-            with open(file_path, 'r', encoding=encoding) as f:
+            path = Path(file_path)
+            if not path.exists():
+                # 尝试在当前目录查找
+                path = Path(__file__).parent / file_path
+            
+            with path.open('r', encoding=encoding) as f:
                 return json.load(f)
         except Exception as e:
             print(f"加载数据文件失败: {e}")
             return []
     
     def find_initial_symptoms(self, body_part: str) -> List[str]:
-        """
-        根据身体部位查找初步症状列表
-        
-        从数据仓库中筛选指定身体部位对应的所有初步症状，
-        去重后返回列表。
-        
-        Args:
-            body_part: 身体部位名称（如"头部"、"胸部"）
-            
-        Returns:
-            初步症状名称列表（去重）
-            
-        示例：
-            >>> repo.find_initial_symptoms("头部")
-            ['头痛', '头晕', '头部外伤', ...]
-        """
+        """根据身体部位查找初步症状列表"""
         symptoms: List[str] = []
+        seen: set = set()
+        
         for item in self._data:
             if item.get('身体部位') == body_part:
                 symptom = item.get('初步症状')
-                if symptom and symptom not in symptoms:
+                if symptom and symptom not in seen:
                     symptoms.append(symptom)
+                    seen.add(symptom)
         return symptoms
     
     def find_specific_symptoms(self, body_part: str, initial_symptom: str) -> List[str]:
-        """
-        根据身体部位和初步症状查找具体症状列表
-        
-        在已确定身体部位和初步症状的基础上，
-        查询更具体的症状描述。
-        
-        Args:
-            body_part: 身体部位名称
-            initial_symptom: 初步症状名称
-            
-        Returns:
-            具体症状描述列表（去重）
-            
-        示例：
-            >>> repo.find_specific_symptoms("头部", "头痛")
-            ['偏头痛', '持续性头痛', '阵发性头痛', ...]
-        """
+        """根据身体部位和初步症状查找具体症状列表"""
         symptoms: List[str] = []
+        seen: set = set()
+        
         for item in self._data:
             if (item.get('身体部位') == body_part and 
                 item.get('初步症状') == initial_symptom):
                 specific = item.get('具体症状')
-                if specific and specific not in symptoms:
+                if specific and specific not in seen:
                     symptoms.append(specific)
+                    seen.add(specific)
         return symptoms
     
-    def find_departments(self, body_part: str, initial_symptom: str, 
-                        specific_symptom: str) -> List[str]:
-        """
-        查找推荐科室
-        
-        根据完整的症状信息（身体部位、初步症状、具体症状），
-        查询推荐的就诊科室。
-        
-        Args:
-            body_part: 身体部位名称
-            initial_symptom: 初步症状名称
-            specific_symptom: 具体症状描述
-            
-        Returns:
-            推荐科室列表（可能有多个）
-            
-        示例：
-            >>> repo.find_departments("头部", "头痛", "偏头痛")
-            ['神经内科', '疼痛科']
-        """
+    def find_departments(
+        self, 
+        body_part: str, 
+        initial_symptom: str, 
+        specific_symptom: str
+    ) -> List[str]:
+        """查找推荐科室"""
         departments: List[str] = []
+        seen: set = set()
+        
         for item in self._data:
             if (item.get('身体部位') == body_part and 
                 item.get('初步症状') == initial_symptom and
                 item.get('具体症状') == specific_symptom):
                 dept = item.get('推荐科室')
-                if dept and dept not in departments:
+                if dept and dept not in seen:
                     departments.append(dept)
+                    seen.add(dept)
         return departments
 
 
 class TriageEngine:
-    """
-    导诊引擎 - 协调多个智能体完成导诊流程
-    
-    多智能体协作：
-    1. InputValidationAgent 验证输入类型
-    2. BodyComparisonAgent 检查身体部位是否改变
-    3. IntentJudgmentAgent 判断用户意图
-    4. QuestionGenerationAgent 生成询问问题
-    
-    RAG增强：
-    - 导诊完成后，使用medical.json生成疾病解释和建议
-    """
-    
-    def __init__(self, config: Config, enable_rag: bool = True) -> None:
+    """导诊引擎 - 协调多个智能体完成导诊流程"""
+
+    def __init__(
+        self,
+        config: Config,
+        enable_rag: bool = True,
+        saved_state: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.config: Config = config
-        
+
         # LLM客户端
         self.client: OpenAI = OpenAI(
             api_key=config.api_key,
             base_url=config.base_url
         )
-        
-        # 数据仓库
-        self.repository: SymptomRepository = SymptomRepository(config.data_file, config.encoding)
-        
-        # 状态
-        self.state: TriageState = TriageState()
-        self.state.options = config.body_types.copy()
-        
+
+        # 数据仓库（单例，避免重复加载 table.json）
+        self.repository: SymptomRepository = SymptomRepository.get_instance(
+            config.data_file,
+            config.encoding,
+        )
+
+        # 状态：支持从保存的状态恢复
+        if saved_state:
+            self.state: TriageState = TriageState.from_dict(saved_state)
+        else:
+            self.state = TriageState()
+            self.state.options = config.body_types.copy()
+
         # 初始化智能体
-        self.input_validator: InputValidationAgent = InputValidationAgent(self.client, config.model)
-        self.body_comparator: BodyComparisonAgent = BodyComparisonAgent(self.client, config.model)
-        self.intent_judger: IntentJudgmentAgent = IntentJudgmentAgent(self.client, config.model)
-        self.question_generator: QuestionGenerationAgent = QuestionGenerationAgent(self.client, config.model)
-        
+        self.input_validator = InputValidationAgent(self.client, config.model)
+        self.body_comparator = BodyComparisonAgent(self.client, config.model)
+        self.intent_judger = IntentJudgmentAgent(self.client, config.model)
+        self.question_generator = QuestionGenerationAgent(self.client, config.model)
+
         # 初始化RAG系统（可选）
         self.rag_retriever: Optional[DiseaseRAGRetriever] = None
         self.rag_generator: Optional[DiseaseExplanationGenerator] = None
         self.enable_rag: bool = enable_rag and RAG_AVAILABLE
-        
+
         if self.enable_rag:
             try:
-                from rag_retriever import create_rag_system
-                self.rag_retriever, self.rag_generator = create_rag_system()
+                self.rag_retriever, self.rag_generator = get_rag_system()
                 print("RAG系统加载成功")
             except Exception as e:
                 print(f"RAG系统加载失败: {e}")
                 self.enable_rag = False
+
+    def save_state(self) -> Dict[str, Any]:
+        """导出当前会话状态（用于外部持久化）"""
+        return self.state.to_dict()
     
     def get_welcome_message(self) -> str:
         """获取欢迎消息"""
@@ -286,190 +251,203 @@ class TriageEngine:
         # 添加用户消息到历史
         self.state.messages.append({"role": "user", "content": user_input})
 
-        # 优先处理“是否重置流程”的确认分支
+        # 优先处理"是否重置流程"的确认分支
         pending_reset_response = self._handle_pending_body_change_confirmation(user_input)
         if pending_reset_response is not None:
             return pending_reset_response
         
-        # ========== 智能体1: 输入验证 ==========
-        confirmed_body: Optional[str] = self.state.records[0] if self.state.records else None
-        last_assistant_msg: Optional[str] = self._get_last_assistant_message()
-        input_type: int = self.input_validator.process(
-            user_input, 
-            self.state.stage, 
-            confirmed_body,
-            last_assistant_msg,
-            self.state.messages  # 传递完整对话历史
-        )
+        # 智能体1: 输入验证
+        input_type = self._validate_input(user_input)
         
         if input_type == 3:
-            # 无关输入 - 改为回退到上一个问题，而不是强制重置
-            self.state.messages.pop()  # 移除无效输入
-            
-            # 获取上一个问题（如果有）
-            last_question = self._get_last_assistant_message()
-            if last_question:
-                # 重新询问上一个问题，给用户重新回答的机会
-                return f"抱歉，我没有理解您的回答。{last_question}", False
-            else:
-                # 如果没有上一个问题，返回初始欢迎消息
-                return f"抱歉，我没有理解您的回答。{self.get_welcome_message()}", False
+            return self._handle_irrelevant_input()
         
         if self.state.stage == Stage.BODY_PART and input_type == 2:
-            # 阶段0但没有身体部位 - 同样改为回退而不是强制重置
-            self.state.messages.pop()  # 移除无效输入
-            
-            # 生成友好的提示，引导用户输入身体部位
-            last_question = self._get_last_assistant_message()
-            if last_question:
-                return f"请先告诉我您哪个身体部位不舒服，我们再继续聊症状。{last_question}", False
-            else:
-                return "请先告诉我您哪个身体部位不舒服？比如头部、胸部、腹部等。", False
+            return self._handle_missing_body_part()
         
-        # ========== 智能体2: 身体部位比对 ==========
+        # 智能体2: 身体部位比对
         if input_type == 1 and self.state.stage > Stage.BODY_PART:
-            comparison_result = self.body_comparator.process(
-                user_input, 
-                self.state.records[0],
-                self.state.stage,
-                self._get_recent_user_messages()
-            )
-            if comparison_result.get("is_changed"):
-                reminder = self._build_body_change_confirmation_message(comparison_result, user_input)
-                self.state.pending_body_change = {
-                    "candidate_input": user_input,
-                    "comparison_result": comparison_result,
-                    "previous_stage": self.state.stage,
-                    "previous_records": self.state.records.copy(),
-                    "previous_options": self.state.options.copy(),
-                    "reminder_message": reminder,
-                    "followup_question": self._rebuild_current_question(),
-                }
-                self.state.messages.append({"role": "assistant", "content": reminder})
-                return reminder, False
+            body_change_result = self._check_body_change(user_input)
+            if body_change_result.get("is_changed"):
+                return self._handle_body_change(body_change_result, user_input)
         
-        # ========== 智能体3: 意图判断 ==========
-        stage_name: str = self.config.stage_names[self.state.stage]
-        matched_index: int = self.intent_judger.process(
+        # 智能体3: 意图判断
+        matched_index = self._judge_intent()
+        
+        if matched_index != -1:
+            return self._advance_stage(matched_index)
+        else:
+            # 智能体4: 问题生成
+            return self._generate_question()
+    
+    def _validate_input(self, user_input: str) -> int:
+        """验证用户输入类型"""
+        confirmed_body = self.state.records[0] if self.state.records else None
+        last_assistant_msg = self._get_last_assistant_message()
+        
+        return self.input_validator.process(
+            user_input, 
+            int(self.state.stage), 
+            confirmed_body,
+            last_assistant_msg,
+            self.state.messages
+        )
+    
+    def _handle_irrelevant_input(self) -> Tuple[str, bool]:
+        """处理无关输入"""
+        self.state.messages.pop()  # 移除无效输入
+        last_question = self._get_last_assistant_message()
+        
+        if last_question:
+            return f"抱歉，我没有理解您的回答。{last_question}", False
+        else:
+            return f"抱歉，我没有理解您的回答。{self.get_welcome_message()}", False
+    
+    def _handle_missing_body_part(self) -> Tuple[str, bool]:
+        """处理缺少身体部位的情况"""
+        self.state.messages.pop()  # 移除无效输入
+        last_question = self._get_last_assistant_message()
+        
+        if last_question:
+            return f"请先告诉我您哪个身体部位不舒服，我们再继续聊症状。{last_question}", False
+        else:
+            return "请先告诉我您哪个身体部位不舒服？比如头部、胸部、腹部等。", False
+    
+    def _check_body_change(self, user_input: str) -> Dict[str, Any]:
+        """检查身体部位是否变更"""
+        return self.body_comparator.process(
+            user_input, 
+            self.state.records[0],
+            self.state.stage,
+            self._get_recent_user_messages()
+        )
+    
+    def _handle_body_change(
+        self, 
+        comparison_result: Dict[str, Any], 
+        user_input: str
+    ) -> Tuple[str, bool]:
+        """处理身体部位变更"""
+        reminder = self._build_body_change_confirmation_message(
+            comparison_result, 
+            user_input
+        )
+        self.state.pending_body_change = {
+            "candidate_input": user_input,
+            "comparison_result": comparison_result,
+            "previous_stage": self.state.stage,
+            "previous_records": self.state.records.copy(),
+            "previous_options": self.state.options.copy(),
+            "reminder_message": reminder,
+            "followup_question": self._rebuild_current_question(),
+        }
+        self.state.messages.append({"role": "assistant", "content": reminder})
+        return reminder, False
+    
+    def _judge_intent(self) -> int:
+        """判断用户意图"""
+        stage_name = self.config.stage_names[int(self.state.stage)]
+        return self.intent_judger.process(
             stage_name,
             self.state.options,
             self.state.messages
         )
-        
-        if matched_index != -1:
-            # 匹配成功，推进阶段
-            return self._advance_stage(matched_index)
-        else:
-            # ========== 智能体4: 问题生成 ==========
-            question: str = self.question_generator.process(
-                stage_name,
-                self.state.records,
-                self.state.options,
-                self.state.messages
-            )
-            self.state.messages.append({"role": "assistant", "content": question})
-            return question, False
+    
+    def _generate_question(self) -> Tuple[str, bool]:
+        """生成询问问题"""
+        stage_name = self.config.stage_names[int(self.state.stage)]
+        question = self.question_generator.process(
+            stage_name,
+            self.state.records,
+            self.state.options,
+            self.state.messages
+        )
+        self.state.messages.append({"role": "assistant", "content": question})
+        return question, False
     
     def _advance_stage(self, matched_index: int) -> Tuple[str, bool]:
-        """
-        推进到下一阶段
-        
-        Args:
-            matched_index: 匹配的选项索引
-        
-        Returns:
-            Tuple[回复消息, 是否完成]
-        """
-        # 检查索引是否有效
+        """推进到下一阶段"""
         if matched_index < 0 or matched_index >= len(self.state.options):
             print(f"错误: 索引 {matched_index} 超出范围，options: {self.state.options}")
             return "抱歉，我没有理解您的选择，请重新回答。", False
         
-        selected: str = self.state.options[matched_index]
+        selected = self.state.options[matched_index]
         self.state.records.append(selected)
-        
-        # 推进阶段
         self.state.stage = Stage(self.state.stage + 1)
         
         if self.state.stage == Stage.INITIAL_SYMPTOM:
-            # 进入初步症状阶段
-            new_options: List[str] = self.repository.find_initial_symptoms(selected)
-            self.state.options = new_options
-            
-            stage_name: str = self.config.stage_names[self.state.stage]
-            question: str = self.question_generator.process(
-                stage_name,
-                self.state.records,
-                self.state.options,
-                self.state.messages
-            )
-            self.state.messages.append({"role": "assistant", "content": question})
-            
-            # 不输出症状列表，只输出问题
-            return question, False
-            
+            return self._enter_initial_symptom_stage(selected)
         elif self.state.stage == Stage.SPECIFIC_SYMPTOM:
-            # 进入具体症状阶段
-            new_options: List[str] = self.repository.find_specific_symptoms(
-                self.state.records[0], selected
-            )
-            self.state.options = new_options
-            
-            stage_name: str = self.config.stage_names[self.state.stage]
-            question: str = self.question_generator.process(
-                stage_name,
-                self.state.records,
-                self.state.options,
-                self.state.messages
-            )
-            self.state.messages.append({"role": "assistant", "content": question})
-            
-            # 不输出症状列表，只输出问题
-            return question, False
-            
+            return self._enter_specific_symptom_stage(selected)
         elif self.state.stage == Stage.COMPLETED:
-            # 导诊完成
-            body_part: str = self.state.records[0]
-            initial_symptom: str = self.state.records[1]
-            specific_symptom: str = self.state.records[2]
-            
-            departments: List[str] = self.repository.find_departments(
-                body_part,
-                initial_symptom,
-                specific_symptom
-            )
-            
-            # 构建基础响应
-            depts_str = "、".join(departments) if departments else "暂无推荐"
-            base_response = (
-                f"🎉 导诊完成！\n\n"
-                f"📍 身体部位：{body_part}\n"
-                f"🔍 症状描述：{specific_symptom or initial_symptom}\n\n"
-                f"🏥 推荐科室：{depts_str}"
-            )
-            
-            # RAG增强：生成疾病解释和建议
-            if self.enable_rag and self.rag_generator:
-                try:
-                    # 提取症状关键词
-                    symptoms = self._extract_symptoms(initial_symptom, specific_symptom)
-                    
-                    # 生成增强回复
-                    enhanced_response = self.rag_generator.generate_enhanced_response(
-                        user_symptoms=symptoms,
-                        body_part=body_part,
-                        department_recommendation=departments
-                    )
-                    
-                    return enhanced_response, True
-                    
-                except Exception as e:
-                    print(f"RAG增强失败: {e}")
-                    return base_response, True
-            
-            return base_response, True
+            return self._complete_triage()
         
         return "继续询问", False
+    
+    def _enter_initial_symptom_stage(self, body_part: str) -> Tuple[str, bool]:
+        """进入初步症状阶段"""
+        new_options = self.repository.find_initial_symptoms(body_part)
+        self.state.options = new_options
+        
+        stage_name = self.config.stage_names[int(self.state.stage)]
+        question = self.question_generator.process(
+            stage_name,
+            self.state.records,
+            self.state.options,
+            self.state.messages
+        )
+        self.state.messages.append({"role": "assistant", "content": question})
+        return question, False
+    
+    def _enter_specific_symptom_stage(self, initial_symptom: str) -> Tuple[str, bool]:
+        """进入具体症状阶段"""
+        body_part = self.state.records[0]
+        new_options = self.repository.find_specific_symptoms(body_part, initial_symptom)
+        self.state.options = new_options
+        
+        stage_name = self.config.stage_names[int(self.state.stage)]
+        question = self.question_generator.process(
+            stage_name,
+            self.state.records,
+            self.state.options,
+            self.state.messages
+        )
+        self.state.messages.append({"role": "assistant", "content": question})
+        return question, False
+    
+    def _complete_triage(self) -> Tuple[str, bool]:
+        """完成导诊"""
+        body_part = self.state.records[0]
+        initial_symptom = self.state.records[1]
+        specific_symptom = self.state.records[2]
+        
+        departments = self.repository.find_departments(
+            body_part,
+            initial_symptom,
+            specific_symptom
+        )
+        
+        depts_str = "、".join(departments) if departments else "暂无推荐"
+        base_response = (
+            f"🎉 导诊完成！\n\n"
+            f"📍 身体部位：{body_part}\n"
+            f"🔍 症状描述：{specific_symptom or initial_symptom}\n\n"
+            f"🏥 推荐科室：{depts_str}"
+        )
+        
+        # RAG增强
+        if self.enable_rag and self.rag_generator:
+            try:
+                symptoms = self._extract_symptoms(initial_symptom, specific_symptom)
+                return self.rag_generator.generate_enhanced_response(
+                    user_symptoms=symptoms,
+                    body_part=body_part,
+                    department_recommendation=departments
+                ), True
+            except Exception as e:
+                print(f"RAG增强失败: {e}")
+        
+        return base_response, True
     
     def _get_last_assistant_message(self) -> Optional[str]:
         """获取最后一条助手消息"""
@@ -477,9 +455,9 @@ class TriageEngine:
             if msg.get("role") == "assistant":
                 return msg.get("content", "")
         return None
-
+    
     def _get_recent_user_messages(self, limit: int = 3) -> List[str]:
-        """获取最近几条用户消息，用于辅助判断是否真的切换了身体部位。"""
+        """获取最近几条用户消息"""
         recent_messages: List[str] = []
         for msg in reversed(self.state.messages):
             if msg.get("role") == "user":
@@ -487,14 +465,18 @@ class TriageEngine:
             if len(recent_messages) >= limit:
                 break
         return list(reversed(recent_messages))
-
-    def _handle_pending_body_change_confirmation(self, user_input: str) -> Optional[Tuple[str, bool]]:
-        """处理待确认的身体部位变化。"""
+    
+    def _handle_pending_body_change_confirmation(
+        self, 
+        user_input: str
+    ) -> Optional[Tuple[str, bool]]:
+        """处理待确认的身体部位变化"""
         pending = self.state.pending_body_change
         if not pending:
             return None
 
         normalized = (user_input or "").strip()
+        
         if self._is_affirmative(normalized):
             self.state.reset(self.config.body_types.copy())
             response = (
@@ -513,12 +495,16 @@ class TriageEngine:
             self.state.messages.append({"role": "assistant", "content": response})
             return response, False
 
-        # 若用户没有明确表示重置，而是继续回答症状，则直接忽略这次提醒，继续当前流程
+        # 用户没有明确表示，继续当前流程
         self.state.pending_body_change = None
         return None
-
-    def _build_body_change_confirmation_message(self, comparison_result: Dict[str, Any], user_input: str) -> str:
-        """构造身体部位变更确认提示。"""
+    
+    def _build_body_change_confirmation_message(
+        self, 
+        comparison_result: Dict[str, Any], 
+        user_input: str
+    ) -> str:
+        """构造身体部位变更确认提示"""
         detected_body = comparison_result.get("detected_body") or user_input
         current_body = self.state.records[0] if self.state.records else "当前部位"
         confidence = comparison_result.get("confidence", 0.0)
@@ -530,42 +516,55 @@ class TriageEngine:
 
         return (
             f"{prefix}（当前记录：{current_body}；新输入：{detected_body}）。\n"
-            "如果您想改查新的部位，请回复“是”或“重置”；"
-            "如果不是，请回复“否”，或者直接继续描述当前症状。"
+            '如果您想改查新的部位，请回复“是”或“重置”；'
+            '如果不是，请回复“否”，或者直接继续描述当前症状。'
         )
-
+    
     def _rebuild_current_question(self) -> str:
-        """根据当前阶段重建应继续追问的问题，避免把提醒文本当成上一轮问题。"""
+        """根据当前阶段重建应继续追问的问题"""
         stage = self.state.stage
 
-        if stage == 1:
+        if stage == Stage.INITIAL_SYMPTOM:
             return "您这种不舒服，是哪里难受，还是摸到了包块？"
 
-        if stage == 2:
+        if stage == Stage.SPECIFIC_SYMPTOM:
             body_part = self.state.records[0] if self.state.records else "该部位"
             initial_symptom = self.state.records[1] if len(self.state.records) > 1 else ""
             if body_part and initial_symptom:
-                return f"明白了。关于{body_part}的“{initial_symptom}”，请再具体描述一下，比如持续时间、程度，或还有没有其他伴随症状？"
+                return (
+                    f"明白了。关于{body_part}的“{initial_symptom}”，"
+                    "请再具体描述一下，比如持续时间、程度，或还有没有其他伴随症状？"
+                )
             return "请再具体描述一下症状，比如持续时间、程度，或还有没有其他伴随症状？"
 
         return "请继续描述您的不适。"
-
+    
     @staticmethod
     def _is_affirmative(text: str) -> bool:
+        """判断是否为肯定回答"""
         normalized = text.replace("，", "").replace("。", "").replace(" ", "")
-        return normalized in {"是", "好的", "好", "要", "需要", "确认", "重新开始", "重置", "重新导诊", "开始吧"}
+        affirmative_words = {
+            "是", "好的", "好", "要", "需要", "确认", 
+            "重新开始", "重置", "重新导诊", "开始吧"
+        }
+        return normalized in affirmative_words
 
     @staticmethod
     def _is_negative(text: str) -> bool:
+        """判断是否为否定回答"""
         normalized = text.replace("，", "").replace("。", "").replace(" ", "")
-        return normalized in {"否", "不用", "不需要", "不是", "继续", "继续当前流程", "不用重置", "不重置"}
+        negative_words = {
+            "否", "不用", "不需要", "不是", "继续", 
+            "继续当前流程", "不用重置", "不重置"
+        }
+        return normalized in negative_words
     
     def reset(self) -> None:
         """重置导诊流程"""
         self.state.reset(self.config.body_types.copy())
 
     def get_pending_confirmation(self) -> Optional[Dict[str, Any]]:
-        """获取当前待确认状态，供接口层返回更明确的交互信号。"""
+        """获取当前待确认状态"""
         pending = self.state.pending_body_change
         if not pending:
             return None
@@ -579,26 +578,17 @@ class TriageEngine:
             "message": pending.get("reminder_message", ""),
         }
     
-    def _extract_symptoms(self, initial_symptom: str, specific_symptom: str) -> List[str]:
-        """
-        从症状描述中提取症状关键词
-        
-        Args:
-            initial_symptom: 初步症状
-            specific_symptom: 具体症状
-            
-        Returns:
-            症状关键词列表
-        """
+    def _extract_symptoms(
+        self, 
+        initial_symptom: str, 
+        specific_symptom: str
+    ) -> List[str]:
+        """从症状描述中提取症状关键词"""
         symptoms = []
         
-        # 添加初步症状
         if initial_symptom:
-            # 提取主要症状词（去除修饰语）
-            symptom = initial_symptom.replace("头痛", "头痛").replace("头晕", "头晕")
-            symptoms.append(symptom)
+            symptoms.append(initial_symptom)
         
-        # 从具体症状中提取关键词
         if specific_symptom:
             # 常见症状关键词列表
             common_symptoms = [
@@ -627,10 +617,6 @@ class TriageEngine:
             body_part, initial_symptom, specific_symptom
         )
         return ", ".join(departments) if departments else ""
-    
-    def get_conversation_summary(self) -> List[Dict[str, str]]:
-        """获取对话摘要"""
-        return self.state.messages.copy()
     
     def get_history_for_display(self) -> List[Dict[str, str]]:
         """获取用于展示的历史记录"""

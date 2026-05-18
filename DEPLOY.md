@@ -48,7 +48,7 @@ MODEL=qwen-plus
 DATABASE_URL=mysql+pymysql://root:你的密码@localhost/medical_triage
 
 # JWT配置
-JWT_SECRET_KEY=your-secret-key-change-this-in-production
+JWT_SECRET_KEY=your_jwt_secret_here
 JWT_ACCESS_TOKEN_EXPIRE_DAYS=30
 ```
 

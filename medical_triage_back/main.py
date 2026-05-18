@@ -1,47 +1,45 @@
 """
 主入口 - 交互式CLI
 """
-import os
 import sys
+from pathlib import Path
 
+# 添加当前目录到路径
+sys.path.insert(0, str(Path(__file__).parent))
 
-# 添加父目录到路径，以便导入
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from config import load_config, Config
+from config import get_config
 from triage import TriageEngine
 
 
 def main() -> None:
     """主函数"""
-    config: Config = load_config()
-    if not config.api_key:
+    config = get_config()
+    
+    if not config.is_configured:
         print("错误: 未找到 API 密钥")
         print("\n请创建 .env 文件或设置环境变量:")
-        print("  DASHSCOPE_API_KEY=your_api_key")
+        print("  API_KEY=your_api_key")
         sys.exit(1)
     
-    engine: TriageEngine = TriageEngine(config)
+    engine = TriageEngine(config)
     
     print(engine.get_welcome_message())
     
     while True:
         try:
-            user_input: str = input("\n> ").strip()
+            user_input = input("\n> ").strip()
             if not user_input:
                 continue
             
-            if user_input.lower() in ['quit', 'exit', '退出']:
+            if user_input.lower() in {'quit', 'exit', '退出'}:
                 print("再见！")
                 break
             
-            if user_input.lower() in ['reset', '重启']:
+            if user_input.lower() in {'reset', '重启'}:
                 engine.reset()
                 print(engine.get_welcome_message())
                 continue
             
-            response: str
-            is_complete: bool
             response, is_complete = engine.process(user_input)
             print(f"\n{response}")
             

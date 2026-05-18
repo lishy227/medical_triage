@@ -1,7 +1,8 @@
 """
 意图判断智能体 - 判断用户回答匹配哪个选项
 """
-from typing import List, Dict, Optional, Any
+import re
+from typing import Any, Dict, List, Optional
 
 from agents.base_agent import BaseAgent
 
@@ -13,8 +14,19 @@ class IntentJudgmentAgent(BaseAgent):
     根据对话历史判断用户属于当前阶段的哪个选项
     """
     
-    def process(self, stage_name: str, options: List[str], 
-                messages: List[Dict[str, str]]) -> int:
+    # 停用词集合
+    STOP_WORDS: frozenset[str] = frozenset([
+        '的', '了', '是', '在', '我', '有', '和', '就', '不', '人', 
+        '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', 
+        '你', '会', '着', '没有', '看', '好', '自己', '这'
+    ])
+    
+    def process(
+        self, 
+        stage_name: str, 
+        options: List[str], 
+        messages: List[Dict[str, str]]
+    ) -> int:
         """
         判断用户意图，匹配选项
         
@@ -26,49 +38,46 @@ class IntentJudgmentAgent(BaseAgent):
         Returns:
             匹配的索引，-1表示未匹配
         """
+        if not options:
+            return -1
+        
         # 获取最后一条用户消息和助手消息
         last_user_msg = None
         last_assistant_msg = None
         
         for msg in reversed(messages):
-            if msg.get("role") == "user" and last_user_msg is None:
-                last_user_msg = msg.get("content", "").strip()
-            elif msg.get("role") == "assistant" and last_assistant_msg is None:
-                last_assistant_msg = msg.get("content", "").strip()
+            role = msg.get("role")
+            content = msg.get("content", "").strip()
+            if role == "user" and last_user_msg is None:
+                last_user_msg = content
+            elif role == "assistant" and last_assistant_msg is None:
+                last_assistant_msg = content
             if last_user_msg and last_assistant_msg:
                 break
         
         if not last_user_msg:
             return -1
         
-        # ====== 关键修复：检查是否是选择类问题的回答 ======
-        # 如果上一条助手消息包含选项列表（A/B/C/D 或 1/2/3/4）
+        # 1. 检查是否是选择类问题的回答
         if last_assistant_msg and self._is_choice_question(last_assistant_msg):
-            # 尝试匹配用户选择
-            choice_index = self._match_choice_answer(last_user_msg, last_assistant_msg, options)
+            choice_index = self._match_choice_answer(
+                last_user_msg, last_assistant_msg, options
+            )
             if choice_index >= 0:
                 return choice_index
         
-        # ====== 快速匹配：检查用户输入是否直接匹配某个选项 ======
-        for i, option in enumerate(options):
-            # 完全匹配或包含关系
-            if option.lower() in last_user_msg.lower() or last_user_msg.lower() in option.lower():
-                return i
-            
-            # 关键词匹配
-            option_keywords = self._extract_keywords(option)
-            user_keywords = self._extract_keywords(last_user_msg)
-            
-            # 如果有关键词匹配
-            if any(kw in user_keywords for kw in option_keywords):
-                return i
+        # 2. 快速匹配：检查用户输入是否直接匹配某个选项
+        direct_match = self._direct_match(last_user_msg, options)
+        if direct_match >= 0:
+            return direct_match
         
-        # ====== 使用 LLM 进行更复杂的判断 ======
-        return self._llm_judgment(stage_name, options, messages, last_user_msg, last_assistant_msg)
+        # 3. 使用 LLM 进行更复杂的判断
+        return self._llm_judgment(
+            stage_name, options, messages, last_user_msg, last_assistant_msg
+        )
     
     def _is_choice_question(self, assistant_msg: str) -> bool:
         """判断是否是选择类问题（包含 A/B/C/D 或选项列表）"""
-        import re
         # 检查是否包含选项标记
         if re.search(r'[A-D][\.、\s]', assistant_msg) or re.search(r'\d+[\.、\s]', assistant_msg):
             return True
@@ -77,9 +86,13 @@ class IntentJudgmentAgent(BaseAgent):
             return True
         return False
     
-    def _match_choice_answer(self, user_msg: str, assistant_msg: str, options: List[str]) -> int:
+    def _match_choice_answer(
+        self, 
+        user_msg: str, 
+        assistant_msg: str, 
+        options: List[str]
+    ) -> int:
         """匹配用户的选择回答"""
-        import re
         user_msg_lower = user_msg.lower().strip()
         
         # 1. 检查是否直接说选项字母（A、B、C、D）
@@ -106,29 +119,52 @@ class IntentJudgmentAgent(BaseAgent):
             # 包含匹配
             if option_lower in user_msg_lower or user_msg_lower in option_lower:
                 return i
-            # 关键词匹配（提取核心词）
+            # 关键词匹配
             option_core = option_lower.replace('时', '').replace('后', '').replace('前', '').strip()
             if len(option_core) >= 2 and option_core in user_msg_lower:
                 return i
         
         return -1
     
+    def _direct_match(self, user_msg: str, options: List[str]) -> int:
+        """直接匹配用户输入和选项"""
+        user_msg_lower = user_msg.lower()
+        
+        for i, option in enumerate(options):
+            option_lower = option.lower()
+            
+            # 完全匹配或包含关系
+            if option_lower in user_msg_lower or user_msg_lower in option_lower:
+                return i
+            
+            # 关键词匹配
+            option_keywords = self._extract_keywords(option)
+            user_keywords = self._extract_keywords(user_msg)
+            
+            # 如果有关键词匹配
+            if any(kw in user_keywords for kw in option_keywords):
+                return i
+        
+        return -1
+    
     def _extract_keywords(self, text: str) -> List[str]:
         """提取文本中的关键词"""
-        # 去除常见虚词，提取有意义的词
-        stop_words = {'的', '了', '是', '在', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这'}
         words = text.lower().replace('，', ',').replace('。', '.').replace('、', ',').split()
         keywords = []
         for word in words:
             word = word.strip('.,!?;:')
-            if len(word) >= 2 and word not in stop_words:
+            if len(word) >= 2 and word not in self.STOP_WORDS:
                 keywords.append(word)
         return keywords
     
-    def _llm_judgment(self, stage_name: str, options: List[str], 
-                      messages: List[Dict[str, str]], 
-                      last_user_msg: str, 
-                      last_assistant_msg: Optional[str]) -> int:
+    def _llm_judgment(
+        self, 
+        stage_name: str, 
+        options: List[str], 
+        messages: List[Dict[str, str]], 
+        last_user_msg: str, 
+        last_assistant_msg: Optional[str]
+    ) -> int:
         """使用 LLM 进行意图判断"""
         
         system_prompt = f"""你是一位医疗导诊助手，负责判断用户的回答对应哪个选项。
@@ -151,26 +187,26 @@ class IntentJudgmentAgent(BaseAgent):
 选项列表：{options}
 用户回答：{last_user_msg}"""
         
-        llm_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        llm_messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt}
+        ]
         llm_messages.extend(messages)
         
-        response: str = self._call_llm(llm_messages)
+        try:
+            response: str = self._call_llm(llm_messages, temperature=0.3)
+        except Exception as e:
+            print(f"LLM意图判断失败: {e}")
+            return -1
         
         # 解析JSON
         result: Optional[Dict[str, Any]] = self._parse_json(response)
         if result and "index" in result:
             index = int(result["index"])
             # 确保索引在有效范围内
-            if 0 <= index < len(options):
+            if -1 <= index < len(options):
                 return index
             else:
                 print(f"警告: LLM 返回的索引 {index} 超出范围 (0-{len(options)-1})")
                 return -1
-        
-        # 回退：检查是否直接包含某个选项
-        last_content: str = messages[-1].get("content", "") if messages else ""
-        for i, option in enumerate(options):
-            if option in last_content:
-                return i
         
         return -1

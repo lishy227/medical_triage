@@ -1,7 +1,7 @@
 """
 问题生成智能体 - 生成询问用户的问题
 """
-from typing import List, Dict
+from typing import Any, Dict, List
 
 from agents.base_agent import BaseAgent
 
@@ -13,20 +13,13 @@ class QuestionGenerationAgent(BaseAgent):
     根据当前阶段和已收集信息生成询问问题
     """
     
-    def process(self, stage_name: str, records: List[str], 
-                options: List[str], messages: List[Dict[str, str]]) -> str:
-        """
-        生成询问问题
-        
-        Args:
-            stage_name: 当前阶段名称
-            records: 已收集的记录
-            options: 当前可选项
-            messages: 对话历史
-        
-        Returns:
-            生成的问题
-        """
+    def process(
+        self, 
+        stage_name: str, 
+        records: List[str], 
+        options: List[str], 
+        messages: List[Dict[str, str]]
+    ) -> str:
         """
         生成询问问题
         
@@ -57,7 +50,38 @@ class QuestionGenerationAgent(BaseAgent):
 仍需确定的"{stage_name}"的选项列表如下：
 {options}"""
         
-        llm_messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        llm_messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt}
+        ]
         llm_messages.extend(messages)
         
-        return self._call_llm(llm_messages)
+        try:
+            return self._call_llm(llm_messages, temperature=0.7)
+        except Exception as e:
+            # LLM调用失败时返回默认问题
+            print(f"问题生成失败: {e}，返回默认问题")
+            return self._generate_fallback_question(stage_name, options)
+    
+    def _generate_fallback_question(
+        self, 
+        stage_name: str, 
+        options: List[str]
+    ) -> str:
+        """
+        生成默认问题（当LLM调用失败时使用）
+        
+        Args:
+            stage_name: 当前阶段名称
+            options: 可选项列表
+            
+        Returns:
+            默认问题文本
+        """
+        if not options:
+            return f"请描述一下您的{stage_name}情况："
+        
+        # 简化选项列表，最多显示5个
+        display_options = options[:5]
+        options_text = "\n".join(f"- {opt}" for opt in display_options)
+        
+        return f"请问您的{stage_name}是以下哪种情况？\n{options_text}"

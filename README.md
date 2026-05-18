@@ -1,424 +1,253 @@
-# AI 医疗导诊系统
+# 🏥 AI 医疗导诊系统
 
-一个基于多智能体协作的 AI 医疗导诊应用，支持 Web 和 Android 双端运行。系统通过自然语言对话收集用户症状信息，智能推荐就诊科室，并为会员用户提供详细的医疗建议。同时支持用户间的评论互动，形成健康交流社区。
+基于 LLM 多智能体协作的智能医疗导诊系统，通过多轮对话引导用户描述症状，自动推荐就诊科室，并结合医学知识图谱提供疾病解释、治疗建议和用药参考。
 
-## 📋 项目简介
+## 技术栈
 
-### 解决的问题
+| 层级 | 技术方案 |
+|---|---|
+| **AI 引擎** | 阿里云 DashScope (qwen-plus) · 多智能体协作 · RAG 知识检索 |
+| **后端** | Python 3.10+ · Flask · SQLAlchemy 2.0 · Pydantic · Waitress |
+| **前端** | HTML5 + CSS3 · Vanilla JS (ES Modules) · Capacitor |
+| **数据库** | SQLite（开发） / MySQL（生产） |
+| **认证** | JWT + bcrypt · 会员分级（免费 / 付费） |
+| **会话** | 内存 / Redis 双后端，自动降级 |
+| **知识库** | 8,808 种疾病，5,998 个症状条目 |
 
-- **就医迷茫**：帮助患者根据症状快速找到合适的就诊科室，减少盲目挂号
-- **资源优化**：缓解医院导诊台压力，提升就医效率
-- **健康科普**：为会员用户提供疾病知识、饮食建议等专业健康指导
-- **用户交流**：通过评论社区让用户分享就医经验、互相帮助
+## 功能亮点
 
-### 核心功能
+- **🩺 多阶段智能导诊**：身体部位 → 初步症状 → 具体症状 → 科室推荐，三轮对话精准定位
+- **🤖 多智能体协作**：输入验证 → 部位比对 → 意图判断 → 问题生成，四个 LLM Agent 各司其职
+- **📚 RAG 医学知识增强**：基于 8,808 条疾病知识库，提供病因、检查、治疗、用药、饮食建议
+- **👤 会员分级体系**：免费用户获取科室推荐，会员解锁详细医疗建议和疾病百科
+- **💬 评论社区**：支持导诊记录评论、回复（楼中楼）、点赞互动
+- **📱 跨平台**：Web + Android APK（Capacitor 打包），一套代码多端运行
+- **🔐 安全认证**：JWT Token 鉴权，bcrypt 密码哈希，登录态自动恢复
+- **♻️ 会话持久化**：支持 Redis 共享存储，多 Worker 部署下对话不中断
 
-- 🤖 **AI 智能导诊**：多轮对话收集症状，精准推荐科室
-- 👤 **用户系统**：支持注册登录，保存历史导诊记录
-- 💎 **会员分级**：普通用户基础导诊，会员享受详细医疗建议
-- 💬 **评论社区**：用户可随时查看和发表评论，支持点赞和楼中楼回复
-- 📱 **跨平台**：Web 网页 + Android App 双端支持
-- 🔄 **会话管理**：支持重置对话、查看历史记录
+## 环境依赖
 
-## 🏗️ 项目结构
+- Python 3.10+
+- MySQL 5.7+（生产环境，可选；开发使用 SQLite 零依赖）
+- Redis 6.0+（可选，用于多进程会话共享）
+- Node.js 18+ + npm（仅 Android 打包需要）
 
-```
-medical_triage/
-├── medical_triage_back/          # 后端服务 (Python Flask)
-│   ├── agents/                   # AI 智能体模块
-│   │   ├── input_validation_agent.py    # 输入验证智能体
-│   │   ├── body_comparison_agent.py     # 身体部位比对智能体
-│   │   ├── intent_judgment_agent.py     # 意图判断智能体
-│   │   └── question_generation_agent.py # 问题生成智能体
-│   ├── knowledge_base/           # 知识库
-│   │   ├── medical.json          # 疾病知识库 (RAG 用)
-│   │   └── loader.py             # 知识库加载器
-│   ├── main.py                   # CLI 入口
-│   ├── web_server.py             # Web 服务入口（已集成社交互动路由）
-│   ├── deploy.py                 # 生产环境部署脚本（Waitress）
-│   ├── triage.py                 # 核心导诊引擎
-│   ├── auth.py                   # 用户认证模块
-│   ├── database.py               # 数据库模型（已集成社交模型）
-│   ├── social.py                 # 社交互动模型（评论、点赞）
-│   ├── social_routes.py          # 社交互动 API 路由
-│   ├── config.py                 # 配置管理
-│   └── requirements.txt          # Python 依赖
-│
-└── medical_triage_web/           # 前端应用
-    ├── www/                      # 前端源码
-    │   ├── index.html            # 主页面
-    │   ├── style.css             # 样式文件
-    │   └── app.js                # 前端逻辑
-    ├── capacitor.config.json     # Capacitor 配置
-    └── package.json              # Node.js 依赖
+## 安装部署
+
+### 1. 克隆项目
+
+```bash
+git clone <your-repo-url>
+cd medical_triage
 ```
 
-## 🚀 运行方式
-
-### 后端服务
-
-#### 1. 环境准备
+### 2. 配置环境变量
 
 ```bash
 cd medical_triage_back
+cp .env.example .env   # 如无 .env.example，直接编辑 .env
+```
 
-# 创建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或 venv\Scripts\activate  # Windows
+编辑 `.env`：
 
-# 安装依赖
+```ini
+# LLM 配置（阿里云 DashScope）
+API_KEY=sk-your-api-key-here
+BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL=qwen-plus
+
+# 数据库
+DATABASE_URL=sqlite:///medical_triage.db          # 本地开发
+# DATABASE_URL=mysql+pymysql://root:password@localhost/medical_triage  # 生产
+
+# JWT（运行 python -c "import secrets; print(secrets.token_urlsafe(43))" 生成）
+JWT_SECRET_KEY=your_jwt_secret_here
+
+# Redis（可选，不填则使用内存存储）
+# REDIS_URL=redis://localhost:6379/0
+```
+
+### 3. 安装依赖
+
+```bash
 pip install -r requirements.txt
 ```
 
-#### 2. 配置环境变量
+### 4. 初始化数据库
 
-创建 `.env` 文件：
+首次运行时自动建表，无需手动操作。
 
-```env
-#大语言模型配置
-API_KEY="你的API KEY"
-BASE_URL="对应的url"
-MODEL="模型名称"
+## 启动命令
 
-# 数据库配置
-# 本地开发使用 SQLite（无需安装MySQL）：
-DATABASE_URL=sqlite:///medical_triage.db
-# 生产环境使用 MySQL：
-# DATABASE_URL=mysql+pymysql://root:password@localhost/medical_triage
-
-# JWT配置
-JWT_SECRET_KEY=your-secret-key-change-this-in-production
-JWT_ACCESS_TOKEN_EXPIRE_DAYS=30
-```
-
-> 获取 API Key：[阿里云 DashScope](https://dashscope.aliyun.com/)
-
-#### 3. 启动服务
-
-**开发环境（本地测试）**
-
-```bash
-# Web 服务（推荐）
-python web_server.py
-
-# 或 CLI 交互模式
-python main.py
-```
-
-Web 服务默认运行在 `http://localhost:5001`
-
-**生产环境（云服务器部署）**
-
-生产环境使用 Waitress 作为 WSGI 服务器，支持 Windows、Linux、Mac 全平台：
-
-```bash
-# 使用部署脚本一键启动（自动安装依赖）
-python deploy.py
-
-# 或手动启动
-pip install waitress
-waitress-serve --host=0.0.0.0 --port=5001 --threads=4 web_server:app
-```
-
-**部署说明**
-
-- 系统采用后台异步加载医学知识库，启动后即可立即响应 API 请求
-- LLM 调用默认 30 秒超时，防止因网络问题导致请求挂起
-- 会员详细建议功能在知识库加载完成后自动可用，加载期间返回通用建议
-- Waitress 是纯 Python 实现，跨平台兼容，无需额外配置
-
-**常见问题：前端无法连接**
-
-1. **检查防火墙/安全组**（最常见原因）
-   ```bash
-   # Ubuntu 放行 5001 端口
-   sudo ufw allow 5001
-   
-   # CentOS 放行 5001 端口
-   sudo firewall-cmd --permanent --add-port=5001/tcp
-   sudo firewall-cmd --reload
-   ```
-   云服务器还需在控制台配置安全组规则
-
-2. **运行诊断工具**
-   ```bash
-   python diagnose.py
-   ```
-
-3. **测试后端是否可访问**
-   ```bash
-   curl http://<服务器IP>:5001/api/server/info
-   ```
-
-### 前端应用
-
-#### Web 网页
-
-```bash
-cd medical_triage_web
-
-# 安装依赖
-npm install
-
-# 开发模式（直接打开 index.html 即可）
-# 或使用本地服务器
-npx serve www
-```
-
-#### Android App
-
-```bash
-cd medical_triage_web
-
-# 安装依赖
-npm install
-
-# 添加 Android 平台
-npx cap add android
-
-# 同步资源
-npx cap sync
-
-# 打开 Android Studio
-npx cap open android
-
-# 在 Android Studio 中构建 APK
-# Build → Build Bundle(s) / APK(s) → Build APK(s)
-```
-
-详细构建指南：[BUILD.md](medical_triage_web/BUILD.md)
-
-## 🛠️ 技术栈
-
-### 后端
-
-| 技术 | 用途 |
-|------|------|
-| **Python 3.10+** | 主开发语言 |
-| **Flask** | Web 框架 |
-| **Flask-CORS** | 跨域支持 |
-| **SQLAlchemy** | ORM 数据库操作 |
-| **PyMySQL** | MySQL 驱动 |
-| **PyJWT** | JWT 认证 |
-| **bcrypt** | 密码加密 |
-| **OpenAI SDK** | 调用大模型 API（带超时控制） |
-| **DashScope** | 阿里云大模型服务 |
-| **Waitress** | 生产环境 WSGI 服务器（跨平台） |
-
-### 前端
-
-| 技术 | 用途 |
-|------|------|
-| **HTML5** | 页面结构 |
-| **CSS3** | 样式设计 |
-| **JavaScript (ES6+)** | 交互逻辑 |
-| **Capacitor** | 混合应用框架（Android） |
-| **Fetch API** | HTTP 请求 |
-
-### 数据库
-
-- **SQLite**（开发环境）
-- **MySQL**（生产环境，可选）
-
-### AI 模型
-
-- **通义千问 (Qwen)** - 阿里云 DashScope 提供的大模型服务
-
-## 🧠 核心架构
-
-### 多智能体协作流程
-
-```
-用户输入
-    ↓
-[输入验证智能体] ──→ 判断输入类型（身体部位/症状/无关）
-    ↓
-[身体部位比对智能体] ──→ 检测是否切换身体部位
-    ↓
-[意图判断智能体] ──→ 匹配用户意图与选项
-    ↓
-[问题生成智能体] ──→ 生成下一轮询问
-    ↓
-返回回复
-```
-
-### 导诊阶段
-
-1. **阶段 0 - 身体部位**：询问用户哪里不舒服
-2. **阶段 1 - 初步症状**：询问大致症状类型
-3. **阶段 2 - 具体症状**：询问具体症状描述
-4. **阶段 3 - 完成**：推荐就诊科室
-
-### 会员分层
-
-| 功能 | 普通用户 | 会员用户 |
-|------|----------|----------|
-| 基础导诊 | ✅ | ✅ |
-| 科室推荐 | ✅ | ✅ |
-| 历史记录 | ✅ | ✅ |
-| 评论社区 | ✅ | ✅ |
-| 疾病分析 | ❌ | ✅ |
-| 治疗建议 | ❌ | ✅ |
-| 饮食指导 | ❌ | ✅ |
-
-## 📡 API 接口
-
-### 认证接口
-
-- `POST /api/auth/register` - 用户注册
-- `POST /api/auth/login` - 用户登录
-- `POST /api/auth/logout` - 用户登出
-- `GET /api/auth/profile` - 获取用户信息
-
-### 导诊接口
-
-- `GET /api/welcome` - 获取欢迎消息
-- `POST /api/chat` - 发送消息（核心接口）
-- `POST /api/reset` - 重置会话
-
-### 会员接口
-
-- `POST /api/membership/upgrade` - 升级会员
-- `GET /api/membership/status` - 获取会员状态
-
-### 用户中心
-
-- `GET /api/user/center` - 个人中心
-- `GET /api/user/history` - 历史记录
-
-### 社交互动接口
-
-- `GET /api/comments` - 获取评论列表（支持分页、排序）
-- `POST /api/comments` - 发表评论
-- `DELETE /api/comments/<id>` - 删除评论
-- `GET /api/comments/<id>/replies` - 获取评论回复
-- `POST /api/likes` - 点赞
-- `DELETE /api/likes` - 取消点赞
-- `GET /api/likes/status` - 查询点赞状态
-
-### 系统接口
-
-- `GET /api/server/info` - 服务器信息（用于重启检测）
-
-## 🔐 安全与性能特性
-
-- **JWT 认证**：基于 Token 的无状态认证
-- **密码加密**：使用 bcrypt 存储密码哈希
-- **输入验证**：多层输入校验，防止注入攻击
-- **敏感词过滤**：评论内容自动过滤不当信息
-- **CORS 保护**：跨域请求控制
-- **服务器重启检测**：自动检测后端重启并退出登录
-- **异步知识库加载**：大型医学知识库后台加载，不阻塞服务启动
-- **LLM 超时控制**：API 调用 30 秒超时，防止请求挂起
-- **多线程并发**：生产环境支持多线程并发处理请求
-
-## 📝 配置说明
-
-### 后端配置 (config.py)
-
-```python
-# 大模型配置
-DASHSCOPE_API_KEY = "your_api_key"  # 从环境变量读取
-BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MODEL = "qwen-turbo"
-
-# 数据文件
-DATA_FILE = "table.json"  # 症状-科室映射表
-ENCODING = "utf-8"
-
-# 身体部位列表
-BODY_TYPES = ["头部", "胸部", "腹部", "四肢", "皮肤", "其他"]
-```
-
-### 前端配置 (app.js)
-
-```javascript
-// API 基础地址
-const API_BASE = "http://localhost:5001";  // 开发环境
-// const API_BASE = "http://your-server:5001";  // 生产环境
-```
-
-## 🧪 测试
+### 本地开发
 
 ```bash
 cd medical_triage_back
-
-# 运行测试
-python -m pytest tests/
+python web_server.py
+# 浏览器访问 http://localhost:5001
 ```
 
-## 📦 部署
-
-### 生产环境部署（推荐）
-
-系统使用 Waitress 作为 WSGI 服务器，支持 Windows、Linux、Mac 全平台统一部署：
-
-**快速部署（推荐）**
+### 生产部署
 
 ```bash
-# 使用部署脚本一键启动（自动安装 waitress）
+cd medical_triage_back
 python deploy.py
+# 使用 Waitress WSGI 服务器，4 线程，监听 0.0.0.0:5001
 ```
 
-**手动部署**
+也可直接用 Gunicorn（Linux/macOS）：
 
 ```bash
-# 安装 waitress
-pip install waitress
-
-# 启动服务（4线程，60秒超时）
-waitress-serve --host=0.0.0.0 --port=5001 --threads=4 web_server:app
+gunicorn -w 4 -b 0.0.0.0:5001 --timeout 60 web_server:app
 ```
 
-**Nginx 反向代理配置示例**
+### Android APK 打包
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-    
-    location / {
-        proxy_pass http://127.0.0.1:5001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-}
+```bash
+cd medical_triage_web
+npm install
+npx cap sync android
+npx cap open android     # 在 Android Studio 中构建
 ```
 
-### Docker 部署（可选）
+## 使用教程
 
-```dockerfile
-# Dockerfile 示例
-FROM python:3.10-slim
-WORKDIR /app
-COPY medical_triage_back/requirements.txt .
-RUN pip install -r requirements.txt
-COPY medical_triage_back/ .
-CMD ["python", "web_server.py"]
+### 1. 注册 / 登录
+
+打开页面后点击右上角「注册」，输入用户名和密码（至少 6 位）。注册成功后自动登录。
+
+### 2. 开始导诊
+
+1. 在输入框描述症状，例如：`我头痛`
+2. 系统识别身体部位「头颅」，询问初步症状类型（持续性钝痛 / 搏动性跳痛 / 针刺样痛）
+3. 选择具体症状后，系统给出**科室推荐**和**匹配疾病信息**
+4. 完成导诊后可开始新对话
+
+### 3. 会员功能
+
+- 免费用户：看到科室推荐 + 基础指导
+- 会员用户（点击「升级会员」）：额外获得详细的疾病百科、治疗建议、用药参考、饮食指导
+
+### 4. 社区互动
+
+点击左侧「评论社区」按钮，浏览其他用户的导诊记录和评论，支持回复和点赞。
+
+## 项目目录结构
+
+```
+medical_triage/
+├── README.md
+├── DEPLOY.md                           # 部署详细文档
+├── .gitignore
+│
+├── medical_triage_back/                # 后端服务
+│   ├── web_server.py                   # Flask 主入口 · 路由注册 · 会话管理
+│   ├── triage.py                       # 核心导诊引擎 · TriageEngine · TriageState
+│   ├── config.py                       # Pydantic 配置管理（.env 加载）
+│   ├── database.py                     # SQLAlchemy 模型（User, TriageHistory）
+│   ├── auth.py                         # JWT + bcrypt 认证模块
+│   ├── session_manager.py              # 双后端会话存储（内存 / Redis）
+│   ├── rag_retriever.py                # RAG 检索 · 疾病匹配 · 解释生成
+│   ├── social.py                       # 评论 / 点赞模型 + 敏感词过滤
+│   ├── social_routes.py                # 社交 API 路由
+│   ├── deploy.py                       # 生产部署脚本（Waitress）
+│   ├── main.py                         # 备用入口
+│   ├── requirements.txt                # Python 依赖清单
+│   ├── table.json                      # 症状-科室映射数据
+│   ├── .env                            # 环境变量（不提交 Git）
+│   │
+│   ├── agents/                         # 四智能体
+│   │   ├── base_agent.py               #   基类 · LLM 调用 · 重试机制 · JSON 解析
+│   │   ├── input_validation_agent.py   #   输入验证 · 类型判断（部位/症状/无关）
+│   │   ├── body_comparison_agent.py    #   部位变更检测 · 确认机制
+│   │   ├── intent_judgment_agent.py    #   意图匹配 · 选择项定位
+│   │   └── question_generation_agent.py#   问题生成 · 追问构建
+│   │
+│   ├── knowledge_base/                 # 医学知识库
+│   │   ├── loader.py                   #   数据加载 · Disease 模型 · 索引构建
+│   │   ├── medical.json                #   8,808 条疾病数据（JSONL）
+│   │   └── README.md                   #   数据来源说明
+│   │
+│   └── tests/                          # 测试
+│       ├── test_session_serialization.py   # TriageState 序列化测试
+│       ├── test_session_manager.py         # SessionManager 行为 + 性能测试
+│       ├── test_membership_step2_acceptance.py  # 会员功能验收
+│       ├── test_step3_route_integration.py      # 路由集成测试
+│       └── benchmark_performance.py            # 独立性能基准
+│
+└── medical_triage_web/                 # 前端
+    ├── capacitor.config.json           # Capacitor 配置
+    ├── package.json                    # Node 依赖
+    ├── android/                        # Android 原生项目
+    ├── build-android.bat               # 一键打包脚本
+    │
+    └── www/                            # Web 前端源码
+        ├── index.html                  # 主页面
+        ├── style.css                   # 全局样式
+        ├── app.js                      # 入口（导入 js/ 模块）
+        └── js/                         # JS 模块
+            ├── core.js                 #   API 基础配置 · HTTP 封装 · 服务器检测
+            ├── ui.js                   #   DOM 操作 · 弹窗 · 加载动画
+            ├── auth.js                 #   登录/注册 · 个人中心 · 会员升级
+            ├── chat.js                 #   导诊对话 · 消息发送 · 阶段指示器
+            ├── social.js               #   评论 · 回复 · 点赞
+            └── app.js                  #   模块装配 · 事件绑定 · 启动引导
 ```
 
-## 🤝 贡献指南
+## 核心架构
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
+```
+用户输入 → InputValidationAgent (类型判断)
+         → BodyComparisonAgent  (部位变更检测)
+         → IntentJudgmentAgent  (意图匹配)
+         → QuestionGeneration   (追问生成)
+         → 回复用户
 
-## 📄 许可证
+完成时 → SymptomRepository (症状→科室查询)
+       → DiseaseRAGRetriever (疾病知识检索)
+       → 返回科室 + 疾病解释 + 建议
+```
 
-本项目仅供学习和研究使用，不得用于商业医疗诊断。
+**会员分层**：`/api/chat` 根据 `membership_type` 控制返回内容：
+- `free` → 仅科室推荐
+- `member` → 科室推荐 + 详细医疗建议（病因、检查、治疗、用药、饮食）
 
-## ⚠️ 免责声明
+## 注意事项
 
-本系统提供的导诊建议仅供参考，不能替代专业医生的诊断。如有身体不适，请及时就医。
+- **医学免责**：本系统仅供参考和学习研究，不构成医疗诊断。如有不适请及时就医。
+- **API Key 安全**：`.env` 文件包含 API 密钥，已加入 `.gitignore`，切勿提交到版本库。
+- **知识库数据**：疾病数据来源于公开的医学知识图谱项目 QASystemOnMedicalKG，仅供学习使用。
+- **JWT 密钥**：生产环境务必使用 `secrets.token_urlsafe(43)` 生成强密钥替换默认值。
+- **会话存储**：未配置 Redis 时使用进程内存，服务器重启会丢失所有活跃会话。多 Worker 部署请配置 Redis。
+- **前端访问**：必须通过 `http://localhost:5001` 访问，直接双击打开 HTML 文件会导致 JS 模块加载失败。
 
----
+## 常见问题
 
-**作者**：lishy227  
-**版本**：v1.0.0  
-**更新日期**：2026-05-17
+### Q: 启动报 `ModuleNotFoundError`
+```bash
+pip install -r requirements.txt   # 确保已安装所有依赖
+```
+
+### Q: 注册/登录按钮无反应
+确认通过 `http://localhost:5001` 访问，而非直接打开 HTML 文件。
+
+### Q: RAG 系统加载失败
+知识库文件 `medical.json` 过大（~50MB），首次加载可能耗时 3-5 秒。后续请求命中缓存，无需重新加载。
+
+### Q: 如何切换数据库
+修改 `.env` 中的 `DATABASE_URL`：
+- SQLite：`sqlite:///medical_triage.db`
+- MySQL：`mysql+pymysql://user:password@host/medical_triage`
+
+### Q: 如何启用 Redis 会话共享
+1. 安装 Redis 并启动服务
+2. `pip install redis`
+3. `.env` 中添加 `REDIS_URL=redis://localhost:6379/0`
+4. 重启服务
+
+### Q: 如何部署到公网
+建议架构：Nginx 反向代理 → Waitress/Gunicorn 多 Worker → Redis 会话 → MySQL
+
+## License
+
+本项目仅供学习和研究使用。疾病知识库数据来源于 [QASystemOnMedicalKG](https://github.com/liuhuanyong/QASystemOnMedicalKG)。

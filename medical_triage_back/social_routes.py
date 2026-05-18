@@ -28,7 +28,7 @@ from datetime import datetime
 from flask import Blueprint, g, jsonify, request
 
 from auth import login_required
-from database import get_session_factory, init_database
+from database import get_session_factory_with_engine, init_database
 from social import Comment, Like, validate_comment_content
 
 # 创建蓝图
@@ -36,7 +36,7 @@ social_bp = Blueprint('social', __name__, url_prefix='/api')
 
 # 初始化数据库连接
 engine = init_database()
-SessionLocal = get_session_factory(engine)
+SessionLocal = get_session_factory_with_engine(engine)
 
 
 def get_db_session():

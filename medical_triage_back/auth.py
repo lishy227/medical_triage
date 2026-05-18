@@ -1,14 +1,15 @@
 """
 认证模块 - JWT Token 管理和密码哈希
 
+使用标准库和第三方库：
+- bcrypt: 密码哈希
+- PyJWT: JWT令牌管理
+- functools.wraps: 装饰器保留元数据
+
 功能：
 - 用户密码的哈希存储和验证（使用bcrypt）
-- JWT Token的生成、解码和验证
+- JWT Token的生成、解码和验证（支持过期时间）
 - 登录验证装饰器（用于保护需要登录的接口）
-
-配置（通过环境变量）：
-- JWT_SECRET_KEY: JWT签名密钥（生产环境必须修改）
-- JWT_ACCESS_TOKEN_EXPIRE_DAYS: Token有效期（默认30天）
 
 使用示例：
     from auth import login_required, create_token, hash_password
@@ -20,20 +21,15 @@
         user_id = g.user_id  # 从g对象获取当前用户ID
         ...
 """
-import jwt
-import bcrypt
-import os
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import request, jsonify, g
+from typing import Optional
 
-# ==================== JWT配置 ====================
+import bcrypt
+import jwt
+from flask import g, jsonify, request
 
-# JWT签名密钥（生产环境必须通过环境变量设置，不要使用默认值）
-JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-this-in-production')
-
-# Token有效期（天数）
-JWT_ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv('JWT_ACCESS_TOKEN_EXPIRE_DAYS', '30'))
+from config import get_config
 
 
 # ==================== 密码哈希 ====================
@@ -49,9 +45,6 @@ def hash_password(password: str) -> str:
         
     Returns:
         哈希后的密码字符串（可直接存入数据库）
-        
-    示例：
-        hashed = hash_password('user_password')
     """
     salt = bcrypt.gensalt(rounds=12)
     hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
@@ -68,18 +61,16 @@ def verify_password(password: str, hashed: str) -> bool:
         
     Returns:
         True表示密码匹配，False表示不匹配
-        
-    示例：
-        if verify_password(input_password, stored_hash):
-            # 密码正确，允许登录
-            ...
     """
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    return bcrypt.checkpw(
+        password.encode('utf-8'), 
+        hashed.encode('utf-8')
+    )
 
 
 # ==================== JWT Token管理 ====================
 
-def create_token(user_id: int) -> str:
+def create_token(user_id: int, expires_delta: Optional[timedelta] = None) -> str:
     """
     创建JWT访问令牌
     
@@ -87,24 +78,33 @@ def create_token(user_id: int) -> str:
     - user_id: 用户ID
     - exp: 过期时间
     - iat: 签发时间
+    - type: 令牌类型
     
     Args:
         user_id: 用户ID（数据库主键）
+        expires_delta: 自定义过期时间，默认使用配置值
         
     Returns:
-        JWT令牌字符串（用于前端存储和后续请求）
-        
-    示例：
-        token = create_token(user.id)
-        return jsonify({'token': token, 'user': user_info})
+        JWT令牌字符串
     """
-    expire = datetime.utcnow() + timedelta(days=JWT_ACCESS_TOKEN_EXPIRE_DAYS)
+    config = get_config()
+    
+    if expires_delta is None:
+        expires_delta = timedelta(hours=config.jwt_expire_hours)
+    
+    expire = datetime.utcnow() + expires_delta
     payload = {
         'user_id': user_id,
         'exp': expire,
-        'iat': datetime.utcnow()
+        'iat': datetime.utcnow(),
+        'type': 'access'
     }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm='HS256')
+    
+    return jwt.encode(
+        payload, 
+        config.jwt_secret, 
+        algorithm='HS256'
+    )
 
 
 def decode_token(token: str) -> dict:
@@ -116,20 +116,22 @@ def decode_token(token: str) -> dict:
         
     Returns:
         解码后的payload字典，如果验证失败返回包含'error'键的字典
-        
-    可能的错误：
-    - 'Token已过期': 令牌超过有效期
-    - '无效的Token': 令牌格式错误或签名无效
     """
+    config = get_config()
+    
     try:
-        return jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+        return jwt.decode(
+            token, 
+            config.jwt_secret, 
+            algorithms=['HS256']
+        )
     except jwt.ExpiredSignatureError:
         return {'error': 'Token已过期'}
     except jwt.InvalidTokenError:
         return {'error': '无效的Token'}
 
 
-def get_token_from_header() -> str | None:
+def get_token_from_header() -> Optional[str]:
     """
     从HTTP请求头中提取JWT令牌
     
@@ -137,16 +139,10 @@ def get_token_from_header() -> str | None:
     
     Returns:
         令牌字符串，如果未找到则返回None
-        
-    示例：
-        token = get_token_from_header()
-        if token:
-            payload = decode_token(token)
-            ...
     """
     auth_header = request.headers.get('Authorization', '')
     if auth_header.startswith('Bearer '):
-        return auth_header[7:]
+        return auth_header[7:].strip()
     return None
 
 
@@ -168,9 +164,6 @@ def login_required(f):
     
     错误响应：
         401: 缺少Token或Token无效/过期
-        
-    Returns:
-        装饰后的函数，如果验证失败直接返回401响应
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -184,7 +177,40 @@ def login_required(f):
         if 'error' in payload:
             return jsonify({'error': payload['error']}), 401
         
-        # 将用户信息存储在Flask的g对象中（仅当前请求有效）
+        # 检查令牌类型
+        if payload.get('type') != 'access':
+            return jsonify({'error': '无效的Token类型'}), 401
+        
+        # 将用户信息存储在Flask的g对象中
         g.user_id = payload['user_id']
+        g.token_payload = payload
+        
         return f(*args, **kwargs)
+    
+    return decorated_function
+
+
+def optional_login(f):
+    """
+    可选登录装饰器
+    
+    如果提供了有效的Token，则设置g.user_id
+    如果没有Token或Token无效，不报错，只是不设置user_id
+    
+    使用场景：某些接口支持匿名访问，但登录用户有额外功能
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = get_token_from_header()
+        g.user_id = None
+        g.token_payload = None
+        
+        if token:
+            payload = decode_token(token)
+            if 'error' not in payload and payload.get('type') == 'access':
+                g.user_id = payload['user_id']
+                g.token_payload = payload
+        
+        return f(*args, **kwargs)
+    
     return decorated_function
