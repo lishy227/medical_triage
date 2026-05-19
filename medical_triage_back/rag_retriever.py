@@ -7,8 +7,6 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import func, inspect
-
 
 @dataclass
 class RetrievedDisease:
@@ -380,33 +378,38 @@ class DiseaseExplanationGenerator:
         return "\n".join(lines)
 
 
-# 便捷函数
+# 便捷函数（进程级缓存：每 Worker 只探测一次 MySQL）
+_rag_system = None
+
+
 def create_rag_system() -> Tuple[DiseaseRAGRetriever, DiseaseExplanationGenerator]:
     """
     快速创建RAG系统
     
     优先使用 MySQL 后端（低内存），不可用时回退到 JSON 文件
+    结果进程级缓存，避免重复探测
     """
+    global _rag_system
+    if _rag_system is not None:
+        return _rag_system
+
+    # 优先 MySQL（表不存在时异常秒抛，不阻塞）
     try:
-        from database import DiseaseModel, get_db_session, get_engine
-        from sqlalchemy import inspect, func
-        engine = get_engine()
-        if inspect(engine).has_table('diseases'):
-            with get_db_session() as db:
-                count = db.query(func.count(DiseaseModel.id)).scalar()
-            if count and count > 0:
-                print(f"[RAG] 使用 MySQL 后端，共 {count} 条疾病")
-                retriever = DBDiseaseRetriever()
-                generator = DBExplanationGenerator(retriever)
-                return retriever, generator
+        from database import get_disease_count
+        count = get_disease_count()
+        if count and count > 0:
+            print(f"[RAG] 使用 MySQL 后端，共 {count} 条疾病")
+            retriever = DBDiseaseRetriever()
+            _rag_system = (retriever, DBExplanationGenerator(retriever))
+            return _rag_system
     except Exception as e:
         print(f"[RAG] MySQL 后端不可用 ({e})，回退 JSON 文件")
 
     # 回退到 in-memory JSON
     print("[RAG] 使用 JSON 文件后端 (注意：内存占用高)")
     retriever = DiseaseRAGRetriever()
-    generator = DiseaseExplanationGenerator(retriever)
-    return retriever, generator
+    _rag_system = (retriever, DiseaseExplanationGenerator(retriever))
+    return _rag_system
 
 
 class DBDiseaseRetriever:

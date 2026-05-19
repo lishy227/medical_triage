@@ -337,7 +337,7 @@ def search_diseases(
     匹配策略：多关键词 LIKE 打分，按分数排序取 Top K
     单次请求内存占用 <1MB
     
-    表不存在 → 静默返回空列表，由调用方回退到 JSON 文件
+    表不存在 → 直接抛异常由调用方捕获，静默回退 JSON
     """
     import json as _json
     import random as _random
@@ -346,15 +346,9 @@ def search_diseases(
     if not terms:
         return []
 
-    engine = get_engine()
     factory = get_session_factory()
     session = factory()
     try:
-        # 检查表是否存在
-        inspector = inspect(engine)
-        if not inspector.has_table('diseases'):
-            return []
-
         rows = session.query(DiseaseModel).all()
         scored = []
 
@@ -388,22 +382,14 @@ def search_diseases(
 
         return [row.to_legacy_dict() for _, row in top]
     except Exception:
-        # 任何异常（表不存在、连接失败等）→ 静默回退
+        # 表不存在 / 连接失败 → 静默返回空，触发 JSON 回退
         return []
     finally:
         session.close()
 
 
 def get_disease_count() -> int:
-    """查询疾病表记录数，表不存在返回 0"""
-    engine = get_engine()
-    try:
-        inspector = inspect(engine)
-        if not inspector.has_table('diseases'):
-            return 0
-    except Exception:
-        return 0
-
+    """查询疾病表记录数，表不存在 / 连接失败返回 0"""
     factory = get_session_factory()
     session = factory()
     try:
