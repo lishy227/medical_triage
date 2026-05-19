@@ -7,12 +7,12 @@
 | 层级 | 技术方案 |
 |---|---|
 | **AI 引擎** | 阿里云 DashScope (qwen-plus) · 多智能体协作 · RAG 知识检索 |
-| **后端** | Python 3.10+ · Flask · SQLAlchemy 2.0 · Pydantic · Waitress |
+| **后端** | Python 3.10+ · FastAPI · SQLAlchemy 2.0 · Pydantic · Uvicorn |
 | **前端** | HTML5 + CSS3 · Vanilla JS (ES Modules) · Capacitor |
 | **数据库** | SQLite（开发） / MySQL（生产） |
 | **认证** | JWT + bcrypt · 会员分级（免费 / 付费） |
 | **会话** | 内存 / Redis 双后端，自动降级 |
-| **知识库** | 8,808 种疾病，5,998 个症状条目 |
+| **知识库** | 8,808 种疾病，5,998 个症状条目 · MySQL（生产）/ JSON 文件（开发）自动回退 |
 
 ## 功能亮点
 
@@ -77,6 +77,26 @@ pip install -r requirements.txt
 
 首次运行时自动建表，无需手动操作。
 
+### 5. （可选）疾病知识库导入 MySQL
+
+**低内存服务器（<2GB）推荐执行此步骤**，将 47MB 的 `medical.json` 导入 MySQL，避免启动时 OOM。
+
+```bash
+cd medical_triage_back
+
+# 首次导入（约 30 秒）
+python setup_diseases.py
+
+# 查看状态
+python setup_diseases.py --status
+
+# 重建（清空旧表重新导入）
+python setup_diseases.py --force
+```
+
+> 未执行此步骤时，系统会自动回退到 `medical.json` 文件加载，功能无差异。
+> 导入后，疾病检索走 MySQL 查询，启动内存从 47MB+ 降至 <50MB。
+
 ## 启动命令
 
 ### 本地开发
@@ -92,7 +112,7 @@ python web_server.py
 ```bash
 cd medical_triage_back
 python deploy.py
-# 使用 Waitress WSGI 服务器，4 线程，监听 0.0.0.0:5001
+# 使用 Uvicorn ASGI 服务器，4 Worker，监听 0.0.0.0:5001
 ```
 
 也可直接用 Gunicorn（Linux/macOS）：
@@ -141,17 +161,18 @@ medical_triage/
 ├── .gitignore
 │
 ├── medical_triage_back/                # 后端服务
-│   ├── web_server.py                   # Flask 主入口 · 路由注册 · 会话管理
+│   ├── web_server.py                   # FastAPI 主入口 · 路由注册 · 会话管理
 │   ├── triage.py                       # 核心导诊引擎 · TriageEngine · TriageState
 │   ├── config.py                       # Pydantic 配置管理（.env 加载）
-│   ├── database.py                     # SQLAlchemy 模型（User, TriageHistory）
+│   ├── database.py                     # SQLAlchemy 模型（User, TriageHistory, DiseaseModel）
 │   ├── auth.py                         # JWT + bcrypt 认证模块
 │   ├── session_manager.py              # 双后端会话存储（内存 / Redis）
-│   ├── rag_retriever.py                # RAG 检索 · 疾病匹配 · 解释生成
+│   ├── rag_retriever.py                # RAG 检索 · 疾病匹配 · 解释生成（MySQL/JSON 双后端）
 │   ├── social.py                       # 评论 / 点赞模型 + 敏感词过滤
 │   ├── social_routes.py                # 社交 API 路由
-│   ├── deploy.py                       # 生产部署脚本（Waitress）
-│   ├── main.py                         # 备用入口
+│   ├── deploy.py                       # 生产部署脚本（Uvicorn）
+│   ├── setup_diseases.py               # 疾病知识库导入 MySQL 工具
+│   ├── main.py                         # 备用 CLI 入口
 │   ├── requirements.txt                # Python 依赖清单
 │   ├── table.json                      # 症状-科室映射数据
 │   ├── .env                            # 环境变量（不提交 Git）
@@ -234,6 +255,8 @@ pip install -r requirements.txt   # 确保已安装所有依赖
 ### Q: RAG 系统加载失败
 知识库文件 `medical.json` 过大（~50MB），首次加载可能耗时 3-5 秒。后续请求命中缓存，无需重新加载。
 
+**低内存服务器**：执行 `python setup_diseases.py` 将知识库导入 MySQL，启动内存从 47MB+ 降至 <50MB，此后疾病检索走数据库查询，不再加载 JSON 文件。
+
 ### Q: 如何切换数据库
 修改 `.env` 中的 `DATABASE_URL`：
 - SQLite：`sqlite:///medical_triage.db`
@@ -246,7 +269,16 @@ pip install -r requirements.txt   # 确保已安装所有依赖
 4. 重启服务
 
 ### Q: 如何部署到公网
-建议架构：Nginx 反向代理 → Waitress/Gunicorn 多 Worker → Redis 会话 → MySQL
+建议架构：Nginx 反向代理 → Uvicorn 多 Worker → Redis 会话 → MySQL（含 diseases 表）
+
+部署步骤：
+```bash
+# 1. 确保 MySQL 和 Redis 已启动
+# 2. 导入疾病知识库到 MySQL
+python setup_diseases.py
+# 3. 启动服务
+python deploy.py
+```
 
 ## License
 

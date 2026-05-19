@@ -1,11 +1,13 @@
 """
-RAG检索模块 - 基于 medical.json 的疾病知识检索
+RAG检索模块 - 基于 medical.json 的疾病知识检索（支持 MySQL / JSON 双后端）
 """
 import json
 import os
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
+
+from sqlalchemy import func, inspect
 
 
 @dataclass
@@ -383,12 +385,106 @@ def create_rag_system() -> Tuple[DiseaseRAGRetriever, DiseaseExplanationGenerato
     """
     快速创建RAG系统
     
-    Returns:
-        (retriever, generator)
+    优先使用 MySQL 后端（低内存），不可用时回退到 JSON 文件
     """
+    try:
+        from database import DiseaseModel, get_db_session, get_engine
+        from sqlalchemy import inspect, func
+        engine = get_engine()
+        if inspect(engine).has_table('diseases'):
+            with get_db_session() as db:
+                count = db.query(func.count(DiseaseModel.id)).scalar()
+            if count and count > 0:
+                print(f"[RAG] 使用 MySQL 后端，共 {count} 条疾病")
+                retriever = DBDiseaseRetriever()
+                generator = DBExplanationGenerator(retriever)
+                return retriever, generator
+    except Exception as e:
+        print(f"[RAG] MySQL 后端不可用 ({e})，回退 JSON 文件")
+
+    # 回退到 in-memory JSON
+    print("[RAG] 使用 JSON 文件后端 (注意：内存占用高)")
     retriever = DiseaseRAGRetriever()
     generator = DiseaseExplanationGenerator(retriever)
     return retriever, generator
+
+
+class DBDiseaseRetriever:
+    """MySQL 后端疾病检索器 — 零内存加载，每次请求查询数据库"""
+
+    def retrieve(
+        self,
+        symptoms: List[str],
+        body_part: Optional[str] = None,
+        top_k: int = 5,
+    ) -> List[RetrievedDisease]:
+        from database import search_diseases
+        diseases = search_diseases(symptoms, top_k=top_k)
+
+        results: List[RetrievedDisease] = []
+        for d in diseases:
+            matched = [s for s in symptoms if s in json.dumps(d.get('symptom', []), ensure_ascii=False)]
+            disease = type('Disease', (), {
+                'name': d.get('name', ''),
+                'desc': d.get('desc', ''),
+                'symptom': d.get('symptom', []),
+                'cause': d.get('cause', ''),
+                'cure_department': d.get('cure_department', []),
+                'cure_way': d.get('cure_way', []),
+                'cure_lasttime': d.get('cure_lasttime', ''),
+                'cured_prob': d.get('cured_prob', ''),
+                'common_drug': d.get('common_drug', []),
+                'do_eat': d.get('do_eat', []),
+                'not_eat': d.get('not_eat', []),
+                'prevent': d.get('prevent', ''),
+                'check': d.get('check', []),
+                'get_prob': d.get('get_prob', ''),
+                'easy_get': d.get('easy_get', ''),
+                'get_way': d.get('get_way', ''),
+                'acompany': d.get('acompany', []),
+                'cost_money': d.get('cost_money', ''),
+            })()
+            results.append(RetrievedDisease(
+                name=d.get('name', ''),
+                score=min(len(matched) / max(len(symptoms), 1), 1.0),
+                disease=disease,
+                matched_symptoms=matched,
+            ))
+        return results
+
+    def get_disease_detail(self, disease_name: str) -> Optional[Any]:
+        from database import DiseaseModel, get_db_session
+        with get_db_session() as db:
+            row = db.query(DiseaseModel).filter_by(name=disease_name).first()
+            if not row:
+                return None
+            d = row.to_legacy_dict()
+            disease = type('Disease', (), {
+                'name': d.get('name', ''),
+                'desc': d.get('desc', ''),
+                'symptom': d.get('symptom', []),
+                'cause': d.get('cause', ''),
+                'cure_department': d.get('cure_department', []),
+                'cure_way': d.get('cure_way', []),
+                'cure_lasttime': d.get('cure_lasttime', ''),
+                'cured_prob': d.get('cured_prob', ''),
+                'common_drug': d.get('common_drug', []),
+                'do_eat': d.get('do_eat', []),
+                'not_eat': d.get('not_eat', []),
+                'prevent': d.get('prevent', ''),
+                'check': d.get('check', []),
+                'get_prob': d.get('get_prob', ''),
+                'easy_get': d.get('easy_get', ''),
+                'get_way': d.get('get_way', ''),
+                'acompany': d.get('acompany', []),
+                'cost_money': d.get('cost_money', ''),
+            })()
+            return disease
+
+
+class DBExplanationGenerator(DiseaseExplanationGenerator):
+    """MySQL 后端的疾病解释生成器 — 继承原逻辑，仅更换检索器"""
+    pass
 
 
 if __name__ == "__main__":

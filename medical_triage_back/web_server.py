@@ -16,7 +16,6 @@ Web服务器 - 医疗导诊系统后端主入口 (FastAPI)
 - /api/server/info : 服务器信息（用于重启检测）
 """
 import json
-import random
 import sys
 import uuid
 from datetime import datetime, timedelta
@@ -34,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 
 BASE_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(BASE_DIR))
@@ -45,7 +45,7 @@ from auth import (
     verify_password,
 )
 from config import get_config
-from database import TriageHistory, User, get_db_session, init_database
+from database import DiseaseModel, TriageHistory, User, get_db_session, init_database, search_diseases
 from session_manager import SessionManager
 from triage import TriageEngine
 
@@ -135,20 +135,21 @@ def save_triage_history(
         db.commit()
 
 
-# ---- 医学知识库缓存 ---------------------------------------------------------
+# ---- 疾病检索（DB 优先，JSON 自动回退）-------------------------------
 
-_medical_cache: Optional[List[Dict[str, Any]]] = None
+# JSON 文件缓存（仅在 DB 不可用时使用）
+_json_disease_cache: Optional[List[Dict[str, Any]]] = None
 
 
-def load_medical_json() -> List[Dict[str, Any]]:
-    """加载 medical.json（惰性加载 + 缓存）"""
-    global _medical_cache
-    if _medical_cache is not None:
-        return _medical_cache
+def _load_diseases_from_json() -> List[Dict[str, Any]]:
+    """加载 medical.json 到内存（仅 DB 回退时调用，惰性加载 + 缓存）"""
+    global _json_disease_cache
+    if _json_disease_cache is not None:
+        return _json_disease_cache
 
     medical_file = BASE_DIR / 'knowledge_base' / 'medical.json'
     if not medical_file.exists():
-        print(f'警告: 医学知识库文件不存在: {medical_file}')
+        print(f'[JSON回退] 文件不存在: {medical_file}')
         return []
 
     diseases = []
@@ -162,22 +163,15 @@ def load_medical_json() -> List[Dict[str, Any]]:
                     diseases.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-        _medical_cache = diseases
-        print(f'医学知识库加载完成，共 {len(diseases)} 条记录')
+        _json_disease_cache = diseases
+        print(f'[JSON回退] 加载完成，共 {len(diseases)} 条记录（注意：高内存占用）')
     except Exception as e:
-        print(f'加载 medical.json 失败: {e}')
+        print(f'[JSON回退] 加载失败: {e}')
     return diseases
 
 
-def generate_detailed_advice(
-    body_part: str,
-    initial_symptom: str,
-    specific_symptom: str,
-    departments: List[str],
-) -> Dict[str, Any]:
-    """基于 medical.json 生成详细医疗建议"""
-    diseases = load_medical_json()
-
+def _build_advice_details(diseases: list) -> Dict[str, Any]:
+    """从疾病列表构建详细建议（DB 和 JSON 共用此函数）"""
     if not diseases:
         return {
             'possible_diseases': [],
@@ -186,53 +180,28 @@ def generate_detailed_advice(
                 'avoid': ['辛辣刺激食物', '油腻食物'],
             },
             'general_tips': [
-                '医学知识库正在加载中，详细建议暂时不可用',
-                '建议及时就医，进行专业检查',
+                '暂未匹配到相关疾病，建议前往医院做进一步检查',
                 '注意休息，避免过度劳累',
                 '如症状加重，请立即前往急诊',
             ],
             'loading': True,
         }
 
-    search_terms = [body_part, initial_symptom, specific_symptom]
-    matched_diseases = []
-
-    for disease in diseases:
-        name = disease.get('name', '')
-        symptoms = disease.get('symptom', [])
-        desc = disease.get('desc', '')
-        match_score = 0
-        for term in search_terms:
-            if term in name or term in desc:
-                match_score += 2
-            if isinstance(symptoms, list):
-                for sym in symptoms:
-                    if term in str(sym):
-                        match_score += 1
-        if match_score > 0:
-            matched_diseases.append((match_score, disease))
-
-    matched_diseases.sort(key=lambda x: x[0], reverse=True)
-    top_diseases = [d for _, d in matched_diseases[:3]]
-    if not top_diseases:
-        top_diseases = random.sample(diseases, min(3, len(diseases)))
-
     detailed = {'possible_diseases': [], 'diet_suggestions': {}, 'general_tips': []}
-
-    for disease in top_diseases:
-        desc = disease.get('desc', '')
+    for d in diseases:
+        desc = d.get('desc', '')
         detailed['possible_diseases'].append({
-            'name': disease.get('name', ''),
+            'name': d.get('name', ''),
             'description': desc[:200] + '...' if len(desc) > 200 else desc,
-            'symptoms': disease.get('symptom', [])[:5],
-            'cure_way': disease.get('cure_way', []),
-            'cure_lasttime': disease.get('cure_lasttime', ''),
-            'cured_prob': disease.get('cured_prob', ''),
-            'cost_money': disease.get('cost_money', ''),
+            'symptoms': d.get('symptom', [])[:5],
+            'cure_way': d.get('cure_way', []),
+            'cure_lasttime': d.get('cure_lasttime', ''),
+            'cured_prob': d.get('cured_prob', ''),
+            'cost_money': d.get('cost_money', ''),
         })
 
     all_do_eat, all_not_eat = [], []
-    for d in top_diseases:
+    for d in diseases:
         all_do_eat.extend(d.get('do_eat', []))
         all_not_eat.extend(d.get('not_eat', []))
 
@@ -247,6 +216,53 @@ def generate_detailed_advice(
         '如症状加重，请立即前往急诊',
     ]
     return detailed
+
+
+def generate_detailed_advice(
+    body_part: str,
+    initial_symptom: str,
+    specific_symptom: str,
+    departments: List[str],
+) -> Dict[str, Any]:
+    """生成详细医疗建议 — 优先 MySQL，表不存在自动回退 JSON"""
+    terms = [body_part, initial_symptom, specific_symptom]
+
+    # 1. 尝试数据库检索
+    try:
+        diseases = search_diseases(terms, top_k=3)
+        if diseases:
+            return _build_advice_details(diseases)
+    except Exception:
+        pass
+
+    # 2. 回退到 JSON 文件全量扫描
+    all_diseases = _load_diseases_from_json()
+    if not all_diseases:
+        return _build_advice_details([])
+
+    import random as _random
+    matched = []
+    for disease in all_diseases:
+        name = disease.get('name', '')
+        symptoms = disease.get('symptom', [])
+        desc = disease.get('desc', '')
+        match_score = 0
+        for term in terms:
+            if term in name or term in desc:
+                match_score += 2
+            if isinstance(symptoms, list):
+                for sym in symptoms:
+                    if term in str(sym):
+                        match_score += 1
+        if match_score > 0:
+            matched.append((match_score, disease))
+
+    matched.sort(key=lambda x: x[0], reverse=True)
+    top = [d for _, d in matched[:3]]
+    if not top and all_diseases:
+        top = _random.sample(all_diseases, min(3, len(all_diseases)))
+
+    return _build_advice_details(top)
 
 
 # ===========================================================================
@@ -498,8 +514,6 @@ if WEB_WWW_DIR.exists():
 # ===========================================================================
 
 if __name__ == '__main__':
-    import threading
-
     import uvicorn
 
     print('=' * 50)
@@ -508,9 +522,5 @@ if __name__ == '__main__':
     print('访问地址: http://localhost:5001')
     print('API 文档: http://localhost:5001/docs')
     print('=' * 50)
-
-    # 后台加载医学知识库
-    loader_thread = threading.Thread(target=load_medical_json, daemon=True)
-    loader_thread.start()
 
     uvicorn.run(app, host='0.0.0.0', port=5001)

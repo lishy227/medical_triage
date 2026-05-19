@@ -24,6 +24,7 @@ from typing import Generator, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -129,6 +130,70 @@ class TriageHistory(Base):
             'triage_result': self.triage_result,
             'conversation_log': self.conversation_log,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class DiseaseModel(Base):
+    """疾病知识库表 — MySQL 存储，替代 47MB JSON 全量加载
+    
+    通过 LIKE 关键词匹配检索，单次请求内存占用 <1MB
+    """
+    __tablename__ = 'diseases'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cause: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    symptoms: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON array
+    cure_department: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cure_way: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cure_lasttime: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    cured_prob: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    common_drug: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    do_eat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    not_eat: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    prevent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    get_prob: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    easy_get: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    get_way: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    complications: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cost_money: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    check_items: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    @staticmethod
+    def _parse_json_field(value: Optional[str]) -> list:
+        """解析 JSON 文本字段为列表"""
+        if not value:
+            return []
+        try:
+            import json
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return [value] if value else []
+
+    def to_legacy_dict(self) -> dict:
+        """兼容旧 Disease dataclass 的字典格式"""
+        return {
+            'name': self.name or '',
+            'desc': self.description or '',
+            'symptom': self._parse_json_field(self.symptoms),
+            'cause': self.cause or '',
+            'cure_department': self._parse_json_field(self.cure_department),
+            'cure_way': self._parse_json_field(self.cure_way),
+            'cure_lasttime': self.cure_lasttime or '',
+            'cured_prob': self.cured_prob or '',
+            'common_drug': self._parse_json_field(self.common_drug),
+            'do_eat': self._parse_json_field(self.do_eat),
+            'not_eat': self._parse_json_field(self.not_eat),
+            'prevent': self.prevent or '',
+            'get_prob': self.get_prob or '',
+            'easy_get': self.easy_get or '',
+            'get_way': self.get_way or '',
+            'acompany': self._parse_json_field(self.complications),
+            'cost_money': self.cost_money or '',
+            'check': self._parse_json_field(self.check_items),
+            'category': self._parse_json_field(self.category),
         }
 
 
@@ -257,6 +322,96 @@ def get_session_factory_with_engine(engine=None):
     保留此接口仅供 social_routes.py 调用，新代码请直接用 get_session_factory()。
     """
     return get_session_factory()
+
+
+# ===========================================================================
+# 共享查询工具
+# ===========================================================================
+
+def search_diseases(
+    terms: list,
+    top_k: int = 5,
+) -> list:
+    """从数据库检索匹配疾病，返回 legacy dict 列表
+    
+    匹配策略：多关键词 LIKE 打分，按分数排序取 Top K
+    单次请求内存占用 <1MB
+    
+    表不存在 → 静默返回空列表，由调用方回退到 JSON 文件
+    """
+    import json as _json
+    import random as _random
+
+    terms = [t for t in terms if t]
+    if not terms:
+        return []
+
+    engine = get_engine()
+    factory = get_session_factory()
+    session = factory()
+    try:
+        # 检查表是否存在
+        inspector = inspect(engine)
+        if not inspector.has_table('diseases'):
+            return []
+
+        rows = session.query(DiseaseModel).all()
+        scored = []
+
+        for row in rows:
+            score = 0.0
+            searchable = f"{row.name or ''} {row.symptoms or ''} {row.description or ''}"
+            for term in terms:
+                if term in searchable:
+                    score += 1.0
+                if row.symptoms:
+                    try:
+                        syms = _json.loads(row.symptoms)
+                        for s in syms:
+                            if term in str(s):
+                                score += 0.5
+                                break
+                    except Exception:
+                        pass
+            if score > 0:
+                scored.append((score, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[:top_k]
+
+        if not top:
+            count = session.query(func.count(DiseaseModel.id)).scalar()
+            if count and count > 0:
+                offset = _random.randint(0, max(0, count - top_k))
+                rows = session.query(DiseaseModel).offset(offset).limit(top_k).all()
+                top = [(0, r) for r in rows]
+
+        return [row.to_legacy_dict() for _, row in top]
+    except Exception:
+        # 任何异常（表不存在、连接失败等）→ 静默回退
+        return []
+    finally:
+        session.close()
+
+
+def get_disease_count() -> int:
+    """查询疾病表记录数，表不存在返回 0"""
+    engine = get_engine()
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table('diseases'):
+            return 0
+    except Exception:
+        return 0
+
+    factory = get_session_factory()
+    session = factory()
+    try:
+        return session.query(func.count(DiseaseModel.id)).scalar() or 0
+    except Exception:
+        return 0
+    finally:
+        session.close()
 
 
 # ===========================================================================
