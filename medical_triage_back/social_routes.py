@@ -1,522 +1,301 @@
 """
 社交互动 API 路由 - 评论和点赞接口
 
-功能：
-- 评论的增删查（支持分页、排序）
-- 点赞/取消点赞
-- 评论回复（楼中楼）
+FastAPI 版本：APIRouter + Depends 依赖注入
 
 接口列表：
-- GET    /api/comments          获取评论列表
-- POST   /api/comments          发表评论
-- DELETE /api/comments/<id>     删除评论
-- GET    /api/comments/<id>/replies  获取评论回复
-- POST   /api/likes             点赞
-- DELETE /api/likes             取消点赞
-- GET    /api/likes/status      查询点赞状态
-
-使用示例：
-    from flask import Flask
-    from social_routes import register_social_routes
-    
-    app = Flask(__name__)
-    register_social_routes(app)
+- GET    /api/comments              获取评论列表
+- POST   /api/comments              发表评论
+- DELETE /api/comments/{comment_id}  删除评论
+- GET    /api/comments/{comment_id}/replies  获取评论回复
+- POST   /api/likes                 点赞
+- DELETE /api/likes                 取消点赞
+- GET    /api/likes/status          查询点赞状态
 """
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Optional
 
-from flask import Blueprint, g, jsonify, request
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
-from auth import login_required
-from database import get_session_factory_with_engine, init_database
+from auth import get_current_user
+from database import User, get_db_session
 from social import Comment, Like, validate_comment_content
 
-# 创建蓝图
-social_bp = Blueprint('social', __name__, url_prefix='/api')
+# ---- 路由器 ----------------------------------------------------------------
+social_router = APIRouter(prefix='/api', tags=['社交互动'])
 
-# 初始化数据库连接
-engine = init_database()
-SessionLocal = get_session_factory_with_engine(engine)
+# ---- 请求模型 -------------------------------------------------------------
 
-
-def get_db_session():
-    """获取数据库会话"""
-    return SessionLocal()
-
-
-def get_current_user_id() -> Optional[int]:
-    """获取当前登录用户ID"""
-    return getattr(g, 'user_id', None)
+class CommentCreateRequest(BaseModel):
+    target_type: str = Field(..., description='目标类型: triage / disease / article')
+    target_id: str = Field(..., description='目标ID')
+    content: str = Field(..., min_length=1, max_length=500, description='评论内容')
+    parent_id: Optional[int] = Field(None, description='父评论ID（回复时填写）')
 
 
-# ==================== 评论接口 ====================
+class LikeRequest(BaseModel):
+    target_type: str = Field(..., description='目标类型: comment / triage / disease')
+    target_id: str = Field(..., description='目标ID')
 
-@social_bp.route('/comments', methods=['GET'])
-@login_required
-def get_comments():
-    """
-    获取评论列表
-    
-    查询参数：
-    - target_type: 目标类型（必需，如 'triage'）
-    - target_id: 目标ID（必需）
-    - page: 页码，默认1
-    - limit: 每页数量，默认20，最大100
-    - sort: 排序方式，'hot'(热度)/'new'(最新)/'top'(点赞最多)，默认'hot'
-    - include_replies: 是否包含回复，默认true
-    
-    响应：
-    {
-        "items": [...],
-        "total": 156,
-        "page": 1,
-        "limit": 20,
-        "has_more": true
-    }
-    """
-    # 获取查询参数
-    target_type = request.args.get('target_type', '').strip()
-    target_id = request.args.get('target_id', '').strip()
-    page = request.args.get('page', 1, type=int) or 1
-    limit = request.args.get('limit', 20, type=int) or 20
-    sort = request.args.get('sort', 'hot').strip() or 'hot'
-    include_replies = request.args.get('include_replies', 'true').lower() == 'true'
-    
-    # 参数校验
-    if not target_type or not target_id:
-        return jsonify({'error': '缺少必需参数 target_type 或 target_id'}), 400
-    
-    # 限制分页参数
-    page = max(1, page)
-    limit = max(1, min(limit, 100))
+# ---- 辅助函数 -------------------------------------------------------------
+
+def _get_liked_ids(user: User, comment_ids: list, db: Session) -> set[int]:
+    """查询当前用户对一批评论的点赞状态"""
+    if not comment_ids:
+        return set()
+    likes = db.query(Like).filter(
+        Like.user_id == user.id,
+        Like.target_type == 'comment',
+        Like.target_id.in_([str(cid) for cid in comment_ids]),
+    ).all()
+    return {int(like.target_id) for like in likes}
+
+# ---- 评论接口 -------------------------------------------------------------
+
+@social_router.get('/comments')
+def get_comments(
+    target_type: str = Query(..., description='目标类型'),
+    target_id: str = Query(..., description='目标ID'),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    sort: str = Query('hot', pattern='^(hot|new|top)$'),
+    include_replies: bool = Query(True),
+    user: User = Depends(get_current_user),
+):
+    """获取评论列表（分页、排序）"""
+    limit = min(limit, 100)
     offset = (page - 1) * limit
-    
-    session = get_db_session()
-    try:
-        # 构建基础查询
-        query = session.query(Comment).filter(
+
+    with get_db_session() as db:
+        query = db.query(Comment).filter(
             Comment.target_type == target_type,
             Comment.target_id == target_id,
             Comment.status == 'active',
-            Comment.parent_id == None  # 只查顶层评论
+            Comment.parent_id == None,  # 只查顶层评论
         )
-        
-        # 获取总数
         total = query.count()
-        
+
         # 排序
-        if sort == 'new':
-            query = query.order_by(Comment.created_at.desc())
-        elif sort == 'top':
-            query = query.order_by(Comment.like_count.desc(), Comment.created_at.desc())
-        else:  # hot - 热度排序（点赞数 + 回复数 + 时间衰减）
-            # 简化版热度排序：点赞数优先，时间次之
-            query = query.order_by(Comment.like_count.desc(), Comment.created_at.desc())
-        
-        # 分页
+        sort_key = (
+            Comment.like_count.desc() if sort in ('hot', 'top')
+            else Comment.created_at.desc()
+        )
+        query = query.order_by(sort_key, Comment.created_at.desc())
+
         comments = query.offset(offset).limit(limit).all()
-        
-        # 获取当前用户的点赞状态
-        user_id = get_current_user_id()
-        liked_comment_ids = set()
-        if user_id:
-            likes = session.query(Like).filter(
-                Like.user_id == user_id,
-                Like.target_type == 'comment',
-                Like.target_id.in_([str(c.id) for c in comments])
-            ).all()
-            liked_comment_ids = {int(like.target_id) for like in likes}
-        
-        # 构建响应
+
+        cids = [c.id for c in comments]
+        liked = _get_liked_ids(user, cids, db)
+
         items = []
-        for comment in comments:
-            item = comment.to_dict(include_replies=include_replies)
-            item['is_liked'] = comment.id in liked_comment_ids
+        for c in comments:
+            item = c.to_dict(include_replies=include_replies)
+            item['is_liked'] = c.id in liked
             items.append(item)
-        
-        return jsonify({
+
+        return {
             'items': items,
             'total': total,
             'page': page,
             'limit': limit,
-            'has_more': offset + len(items) < total
-        })
-    finally:
-        session.close()
+            'has_more': offset + len(items) < total,
+        }
 
 
-@social_bp.route('/comments', methods=['POST'])
-@login_required
-def create_comment():
-    """
-    发表评论
-    
-    请求体：
-    {
-        "target_type": "triage",
-        "target_id": "12345",
-        "content": "评论内容",
-        "parent_id": null  // 可选，回复某条评论时填写
-    }
-    
-    响应：
-    {
-        "message": "评论成功",
-        "comment": {...}
-    }
-    """
-    data: Dict[str, Any] = request.json or {}
-    target_type = str(data.get('target_type', '')).strip()
-    target_id = str(data.get('target_id', '')).strip()
-    content = str(data.get('content', '')).strip()
-    parent_id = data.get('parent_id')
-    
-    # 参数校验
-    if not target_type or not target_id:
-        return jsonify({'error': '缺少必需参数 target_type 或 target_id'}), 400
-    
-    # 内容校验
-    valid, error_msg = validate_comment_content(content)
+@social_router.post('/comments', status_code=201)
+def create_comment(
+    data: CommentCreateRequest,
+    user: User = Depends(get_current_user),
+):
+    """发表评论 / 回复"""
+    valid, error_msg = validate_comment_content(data.content)
     if not valid:
-        return jsonify({'error': error_msg}), 400
-    
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({'error': '请先登录'}), 401
-    
-    session = get_db_session()
-    try:
-        # 如果 parent_id 存在，验证父评论是否存在
-        if parent_id:
-            parent = session.query(Comment).filter(
-                Comment.id == parent_id,
-                Comment.status == 'active'
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    with get_db_session() as db:
+        parent = None
+        if data.parent_id:
+            parent = db.query(Comment).filter(
+                Comment.id == data.parent_id,
+                Comment.status == 'active',
             ).first()
             if not parent:
-                return jsonify({'error': '回复的评论不存在或已被删除'}), 404
-            # 确保回复的是同一目标
-            if parent.target_type != target_type or parent.target_id != target_id:
-                return jsonify({'error': '回复的评论与目标不匹配'}), 400
-        
-        # 创建评论
+                raise HTTPException(404, '回复的评论不存在或已被删除')
+            if (parent.target_type != data.target_type or
+                parent.target_id != data.target_id):
+                raise HTTPException(400, '回复的评论与目标不匹配')
+
         comment = Comment(
-            user_id=user_id,
-            target_type=target_type,
-            target_id=target_id,
-            content=content,
-            parent_id=parent_id,
-            status='active'
+            user_id=user.id,
+            target_type=data.target_type,
+            target_id=data.target_id,
+            content=data.content,
+            parent_id=data.parent_id,
+            status='active',
         )
-        session.add(comment)
-        session.commit()
-        session.refresh(comment)
-        
-        return jsonify({
+        db.add(comment)
+        db.commit()
+        db.refresh(comment)
+
+        return {
             'message': '评论成功',
-            'comment': comment.to_dict(include_replies=False)
-        }), 201
-    finally:
-        session.close()
+            'comment': comment.to_dict(include_replies=False),
+        }
 
 
-@social_bp.route('/comments/<int:comment_id>', methods=['DELETE'])
-@login_required
-def delete_comment(comment_id: int):
-    """
-    删除评论（软删除，仅评论作者可操作）
-    
-    响应：
-    {
-        "message": "删除成功"
-    }
-    """
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({'error': '请先登录'}), 401
-    
-    session = get_db_session()
-    try:
-        comment = session.query(Comment).filter(
+@social_router.delete('/comments/{comment_id}')
+def delete_comment(
+    comment_id: int,
+    user: User = Depends(get_current_user),
+):
+    """删除评论（软删除，仅作者可操作）"""
+    with get_db_session() as db:
+        comment = db.query(Comment).filter(
             Comment.id == comment_id,
-            Comment.status == 'active'
+            Comment.status == 'active',
         ).first()
-        
         if not comment:
-            return jsonify({'error': '评论不存在或已被删除'}), 404
-        
-        # 只能删除自己的评论
-        if comment.user_id != user_id:
-            return jsonify({'error': '无权删除此评论'}), 403
-        
-        # 软删除
+            raise HTTPException(404, '评论不存在或已被删除')
+        if comment.user_id != user.id:
+            raise HTTPException(403, '无权删除此评论')
+
         comment.status = 'deleted'
         comment.updated_at = datetime.utcnow()
-        session.commit()
-        
-        return jsonify({'message': '删除成功'})
-    finally:
-        session.close()
+        db.commit()
+        return {'message': '删除成功'}
 
 
-@social_bp.route('/comments/<int:comment_id>/replies', methods=['GET'])
-@login_required
-def get_comment_replies(comment_id: int):
-    """
-    获取评论的回复列表
-    
-    查询参数：
-    - page: 页码，默认1
-    - limit: 每页数量，默认10，最大50
-    
-    响应：
-    {
-        "items": [...],
-        "total": 20,
-        "page": 1,
-        "has_more": false
-    }
-    """
-    page = request.args.get('page', 1, type=int) or 1
-    limit = request.args.get('limit', 10, type=int) or 10
-    
-    page = max(1, page)
-    limit = max(1, min(limit, 50))
+@social_router.get('/comments/{comment_id}/replies')
+def get_comment_replies(
+    comment_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+):
+    """获取评论的回复列表"""
+    limit = min(limit, 50)
     offset = (page - 1) * limit
-    
-    session = get_db_session()
-    try:
-        # 验证父评论是否存在
-        parent = session.query(Comment).filter(
+
+    with get_db_session() as db:
+        parent = db.query(Comment).filter(
             Comment.id == comment_id,
-            Comment.status == 'active'
+            Comment.status == 'active',
         ).first()
         if not parent:
-            return jsonify({'error': '评论不存在或已被删除'}), 404
-        
-        # 查询回复
-        query = session.query(Comment).filter(
+            raise HTTPException(404, '评论不存在或已被删除')
+
+        query = db.query(Comment).filter(
             Comment.parent_id == comment_id,
-            Comment.status == 'active'
+            Comment.status == 'active',
         ).order_by(Comment.created_at.asc())
-        
+
         total = query.count()
         replies = query.offset(offset).limit(limit).all()
-        
-        # 获取当前用户的点赞状态
-        user_id = get_current_user_id()
-        liked_reply_ids = set()
-        if user_id:
-            likes = session.query(Like).filter(
-                Like.user_id == user_id,
-                Like.target_type == 'comment',
-                Like.target_id.in_([str(r.id) for r in replies])
-            ).all()
-            liked_reply_ids = {int(like.target_id) for like in likes}
-        
+
+        rids = [r.id for r in replies]
+        liked = _get_liked_ids(user, rids, db)
+
         items = []
-        for reply in replies:
-            item = reply.to_dict(include_replies=False)
-            item['is_liked'] = reply.id in liked_reply_ids
+        for r in replies:
+            item = r.to_dict(include_replies=False)
+            item['is_liked'] = r.id in liked
             items.append(item)
-        
-        return jsonify({
+
+        return {
             'items': items,
             'total': total,
             'page': page,
-            'has_more': offset + len(items) < total
-        })
-    finally:
-        session.close()
+            'has_more': offset + len(items) < total,
+        }
 
+# ---- 点赞接口 -------------------------------------------------------------
 
-# ==================== 点赞接口 ====================
+@social_router.post('/likes')
+def create_like(
+    data: LikeRequest,
+    user: User = Depends(get_current_user),
+):
+    """点赞"""
+    if data.target_type not in ('comment', 'triage', 'disease'):
+        raise HTTPException(400, '无效的 target_type')
 
-@social_bp.route('/likes', methods=['POST'])
-@login_required
-def create_like():
-    """
-    点赞
-    
-    请求体：
-    {
-        "target_type": "comment",
-        "target_id": "123"
-    }
-    
-    响应：
-    {
-        "message": "点赞成功",
-        "liked": true,
-        "like_count": 10
-    }
-    """
-    data: Dict[str, Any] = request.json or {}
-    target_type = str(data.get('target_type', '')).strip()
-    target_id = str(data.get('target_id', '')).strip()
-    
-    if not target_type or not target_id:
-        return jsonify({'error': '缺少必需参数 target_type 或 target_id'}), 400
-    
-    if target_type not in ('comment', 'triage', 'disease'):
-        return jsonify({'error': '无效的 target_type'}), 400
-    
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({'error': '请先登录'}), 401
-    
-    session = get_db_session()
-    try:
-        # 检查是否已点赞
-        existing = session.query(Like).filter(
-            Like.user_id == user_id,
-            Like.target_type == target_type,
-            Like.target_id == target_id
+    with get_db_session() as db:
+        existing = db.query(Like).filter(
+            Like.user_id == user.id,
+            Like.target_type == data.target_type,
+            Like.target_id == data.target_id,
         ).first()
-        
         if existing:
-            return jsonify({'error': '已经点赞过了', 'liked': True}), 409
-        
-        # 创建点赞
+            raise HTTPException(409, '已经点赞过了')
+
         like = Like(
-            user_id=user_id,
-            target_type=target_type,
-            target_id=target_id
+            user_id=user.id,
+            target_type=data.target_type,
+            target_id=data.target_id,
         )
-        session.add(like)
-        
-        # 更新评论的点赞数（如果是评论）
+        db.add(like)
+
         like_count = 0
-        if target_type == 'comment':
-            comment = session.query(Comment).filter(
-                Comment.id == int(target_id),
-                Comment.status == 'active'
+        if data.target_type == 'comment':
+            comment = db.query(Comment).filter(
+                Comment.id == int(data.target_id),
+                Comment.status == 'active',
             ).first()
             if comment:
                 comment.like_count = (comment.like_count or 0) + 1
                 like_count = comment.like_count
-        
-        session.commit()
-        
-        return jsonify({
-            'message': '点赞成功',
-            'liked': True,
-            'like_count': like_count
-        })
-    finally:
-        session.close()
+
+        db.commit()
+        return {'message': '点赞成功', 'liked': True, 'like_count': like_count}
 
 
-@social_bp.route('/likes', methods=['DELETE'])
-@login_required
-def delete_like():
-    """
-    取消点赞
-    
-    请求体：
-    {
-        "target_type": "comment",
-        "target_id": "123"
-    }
-    
-    响应：
-    {
-        "message": "取消点赞成功",
-        "liked": false,
-        "like_count": 9
-    }
-    """
-    data: Dict[str, Any] = request.json or {}
-    target_type = str(data.get('target_type', '')).strip()
-    target_id = str(data.get('target_id', '')).strip()
-    
-    if not target_type or not target_id:
-        return jsonify({'error': '缺少必需参数 target_type 或 target_id'}), 400
-    
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({'error': '请先登录'}), 401
-    
-    session = get_db_session()
-    try:
-        # 查找点赞记录
-        like = session.query(Like).filter(
-            Like.user_id == user_id,
-            Like.target_type == target_type,
-            Like.target_id == target_id
+@social_router.delete('/likes')
+def delete_like(
+    data: LikeRequest,
+    user: User = Depends(get_current_user),
+):
+    """取消点赞"""
+    if data.target_type not in ('comment', 'triage', 'disease'):
+        raise HTTPException(400, '无效的 target_type')
+
+    with get_db_session() as db:
+        like = db.query(Like).filter(
+            Like.user_id == user.id,
+            Like.target_type == data.target_type,
+            Like.target_id == data.target_id,
         ).first()
-        
         if not like:
-            return jsonify({'error': '尚未点赞', 'liked': False}), 404
-        
-        session.delete(like)
-        
-        # 更新评论的点赞数（如果是评论）
+            raise HTTPException(404, '尚未点赞')
+
+        db.delete(like)
+
         like_count = 0
-        if target_type == 'comment':
-            comment = session.query(Comment).filter(
-                Comment.id == int(target_id),
-                Comment.status == 'active'
+        if data.target_type == 'comment':
+            comment = db.query(Comment).filter(
+                Comment.id == int(data.target_id),
+                Comment.status == 'active',
             ).first()
             if comment:
                 comment.like_count = max(0, (comment.like_count or 0) - 1)
                 like_count = comment.like_count
-        
-        session.commit()
-        
-        return jsonify({
-            'message': '取消点赞成功',
-            'liked': False,
-            'like_count': like_count
-        })
-    finally:
-        session.close()
+
+        db.commit()
+        return {'message': '取消点赞成功', 'liked': False, 'like_count': like_count}
 
 
-@social_bp.route('/likes/status', methods=['GET'])
-@login_required
-def get_like_status():
-    """
-    查询当前用户对某目标的点赞状态
-    
-    查询参数：
-    - target_type: 目标类型（必需）
-    - target_id: 目标ID（必需）
-    
-    响应：
-    {
-        "liked": true
-    }
-    """
-    target_type = request.args.get('target_type', '').strip()
-    target_id = request.args.get('target_id', '').strip()
-    
-    if not target_type or not target_id:
-        return jsonify({'error': '缺少必需参数 target_type 或 target_id'}), 400
-    
-    user_id = get_current_user_id()
-    if not user_id:
-        return jsonify({'liked': False})
-    
-    session = get_db_session()
-    try:
-        like = session.query(Like).filter(
-            Like.user_id == user_id,
+@social_router.get('/likes/status')
+def get_like_status(
+    target_type: str = Query(..., description='目标类型'),
+    target_id: str = Query(..., description='目标ID'),
+    user: User = Depends(get_current_user),
+):
+    """查询当前用户对某目标的点赞状态"""
+    with get_db_session() as db:
+        like = db.query(Like).filter(
+            Like.user_id == user.id,
             Like.target_type == target_type,
-            Like.target_id == target_id
+            Like.target_id == target_id,
         ).first()
-        
-        return jsonify({'liked': like is not None})
-    finally:
-        session.close()
-
-
-# ==================== 注册函数 ====================
-
-def register_social_routes(app):
-    """
-    注册社交互动路由到 Flask 应用
-    
-    Args:
-        app: Flask 应用实例
-    """
-    app.register_blueprint(social_bp)
+        return {'liked': like is not None}
