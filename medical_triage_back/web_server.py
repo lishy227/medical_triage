@@ -27,11 +27,13 @@ from fastapi import (
     FastAPI,
     HTTPException,
     Query,
+    Request,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).parent.resolve()
@@ -95,6 +97,17 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
+
+# 静态资源禁用缓存（开发阶段，避免浏览器使用旧版 JS/CSS/HTML）
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.endswith(('.js', '.css', '.html')) or path == '/':
+            response.headers['Cache-Control'] = 'no-store, max-age=0'
+        return response
+
+app.add_middleware(NoCacheStaticMiddleware)
 
 # 服务器实例 ID
 SERVER_INSTANCE_ID = str(uuid.uuid4())

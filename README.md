@@ -77,25 +77,78 @@ pip install -r requirements.txt
 
 首次运行时自动建表，无需手动操作。
 
-### 5. （可选）疾病知识库导入 MySQL
+### 5. 疾病知识库导入 MySQL
 
-**低内存服务器（<2GB）推荐执行此步骤**，将 47MB 的 `medical.json` 导入 MySQL，避免启动时 OOM。
+> `medical.json` 含 8,808 条疾病数据，文件 47MB。默认以 JSON 文件加载（首次请求 3-5 秒，内存 +100MB）。
+> 执行本步骤后，疾病数据存入 MySQL 数据库，检索走 SQL 查询，启动内存降至 <50MB。
+
+#### 为什么做这一步
+
+| | JSON 文件加载 | MySQL 数据库 |
+|---|---|---|
+| 启动内存 | 每 Worker +100MB（4 Worker ≈ 400MB） | 零额外内存 |
+| 内存原理 | `json.loads()` × 8808 → Python dict 全部驻留堆 | InnoDB 按页读磁盘，不驻留内存 |
+| 首请求 | 3-5 秒（加载到内存） | 毫秒（SQL 查询） |
+| 多 Worker | 每个进程独立加载，内存叠加 | 共享同一份数据库文件 |
+
+**低内存服务器（<2GB）强烈推荐。**
+
+#### 执行导入
 
 ```bash
 cd medical_triage_back
 
-# 首次导入（约 30 秒）
+# 首次导入（流式逐行写入，不占内存，约 30 秒）
 python setup_diseases.py
-
-# 查看状态
-python setup_diseases.py --status
-
-# 重建（清空旧表重新导入）
-python setup_diseases.py --force
 ```
 
-> 未执行此步骤时，系统会自动回退到 `medical.json` 文件加载，功能无差异。
-> 导入后，疾病检索走 MySQL 查询，启动内存从 47MB+ 降至 <50MB。
+导入进程输出示例：
+```
+==================================================
+医疗知识库 — 疾病表初始化
+==================================================
+表已就绪: diseases
+表为空，开始导入...
+  已导入 200 条...
+  已导入 400 条...
+  ...
+  已导入 8800 条...
+
+导入完成: 共 8808 条, 新导入 8808 条, 跳过 0 条, 总计 8808 条
+```
+
+#### 常用命令
+
+```bash
+python setup_diseases.py             # 首次导入 / 增量追加（跳过已存在的）
+python setup_diseases.py --status    # 查看当前表记录数 + 示例数据
+python setup_diseases.py --force     # 删除旧表，全部重建
+```
+
+#### 验证
+
+```bash
+python setup_diseases.py --status
+# 输出：
+# 疾病表记录数: 8808
+# 示例疾病: 偏头痛, 紧张性头痛, 丛集性头痛
+```
+
+#### 工作原理
+
+```
+未执行 setup_diseases.py：
+  请求 → search_diseases() → diseases 表不存在 → 秒抛异常
+      → 自动回退 _load_diseases_from_json()
+      → 读 47MB 文件到内存 → 业务正常（功能无差异）
+
+执行后重启：
+  请求 → search_diseases() → SELECT FROM diseases
+      → MySQL 返回匹配结果 → 零内存加载
+```
+
+> 未执行本步骤时系统功能完全正常，仅在内存和首请求速度上有差异。
+> 导入后需重启服务（`python deploy.py`）才能切换到 MySQL 后端。
 
 ## 启动命令
 
@@ -269,15 +322,19 @@ pip install -r requirements.txt   # 确保已安装所有依赖
 4. 重启服务
 
 ### Q: 如何部署到公网
+
 建议架构：Nginx 反向代理 → Uvicorn 多 Worker → Redis 会话 → MySQL（含 diseases 表）
 
-部署步骤：
 ```bash
-# 1. 确保 MySQL 和 Redis 已启动
-# 2. 导入疾病知识库到 MySQL
+# 1. 服务器安装 MySQL + Redis 并启动
+# 2. 克隆项目，修改 .env 为 MySQL 连接串 + Redis URL
+# 3. 安装依赖
+pip install -r requirements.txt
+# 4. 导入疾病知识库到 MySQL（重要：避免 4 Worker × 47MB = OOM）
 python setup_diseases.py
-# 3. 启动服务
+# 5. 启动服务
 python deploy.py
+# 6. 配置 Nginx 反向代理到 :5001
 ```
 
 ## License

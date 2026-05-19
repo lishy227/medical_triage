@@ -477,8 +477,18 @@ export function setAuthError(message = "") {
 // 弹窗：个人中心
 // ============================================================================
 
+/**
+ * 打开个人中心面板并加载数据
+ *
+ * 先显示面板，再异步加载资料和历史记录。
+ * 两个步骤解耦：面板立即打开（无等待感），数据异步填充。
+ */
 export function openProfilePanel() {
   document.getElementById("profilePanel").classList.remove("hidden");
+  // 异步加载数据（延迟 import 避免循环依赖）
+  import("./auth.js")
+    .then((m) => m.loadProfileAndHistory())
+    .catch((e) => console.error("加载个人中心失败:", e));
 }
 
 export function closeProfilePanel() {
